@@ -46,3 +46,38 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```bash
 deactivate
 ```
+
+## 의존성 설치
+
+가상환경을 활성화한 상태에서 실행합니다.
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 주요 패키지
+
+| 패키지 | 버전 | 용도 |
+| --- | --- | --- |
+| Django | 5.2.x (LTS) | 웹 프레임워크 |
+| djangorestframework | 3.18.x | REST API |
+| djangorestframework-simplejwt | 5.5.x | JWT 인증 |
+| django-cors-headers | 4.9.x | CORS 설정 |
+| django-environ | 0.14.x | `.env` 환경변수 로딩 |
+| psycopg[binary] | 3.3.x | PostgreSQL 드라이버 |
+
+### 패키지 추가 시
+
+```bash
+pip install <패키지명>
+pip freeze --exclude pip > requirements.txt
+```
+
+Windows PowerShell 5.1에서는 `>` 리다이렉트가 UTF-16으로 저장되므로 아래처럼 인코딩을 지정하세요.
+
+```powershell
+pip freeze --exclude pip | Out-File -Encoding ascii requirements.txt
+```
+
+`requirements.txt` 변경 사항도 함께 커밋해 주세요.
