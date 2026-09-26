@@ -123,6 +123,11 @@ python -c "from django.core.management.utils import get_random_secret_key; print
 | `CSRF_TRUSTED_ORIGINS` | | (없음) | CSRF 신뢰 출처, 쉼표로 구분 |
 | `JWT_ACCESS_TOKEN_LIFETIME_MINUTES` | | `30` | Access 토큰 유효 시간(분) |
 | `JWT_REFRESH_TOKEN_LIFETIME_DAYS` | | `7` | Refresh 토큰 유효 기간(일) |
+| `DB_NAME` | O | - | PostgreSQL 데이터베이스 이름 |
+| `DB_USER` | O | - | PostgreSQL 사용자 |
+| `DB_PASSWORD` | O | - | PostgreSQL 비밀번호 |
+| `DB_HOST` | | `localhost` | PostgreSQL 호스트 |
+| `DB_PORT` | | `5432` | PostgreSQL 포트 |
 
 이미 설정된 OS 환경변수가 `.env` 값보다 우선합니다.
 
@@ -134,6 +139,40 @@ python -c "from django.core.management.utils import get_random_secret_key; print
 - **Media**: 업로드 파일은 `media/`에 저장되고 `/media/` URL로 제공됩니다. 개발 서버에서는 `DEBUG=True`일 때만 제공합니다.
 - **사용자 모델**: `users.User` (`AbstractUser` 상속, `AUTH_USER_MODEL = 'users.User'`)
 - **DRF**: JWT 인증이 기본입니다. 기본 권한은 `IsAuthenticated`이므로 공개 API는 뷰에서 `AllowAny`로 따로 지정해야 합니다.
+
+## 로컬 PostgreSQL 준비
+
+DB 접속 정보는 모두 `.env`의 `DB_*` 변수에서 읽습니다. 먼저 `.env`에 `DB_NAME`, `DB_USER`, `DB_PASSWORD`를 채운 뒤 아래 방법 중 하나로 DB를 준비하세요.
+로컬 개발용 DB만 사용하고, 운영 DB 접속 정보는 로컬 `.env`에 넣지 마세요.
+
+### 방법 1: Docker (권장)
+
+Docker Desktop을 실행한 뒤 프로젝트 루트에서 아래 명령을 실행합니다. `.env`의 값으로 DB와 사용자가 자동으로 만들어집니다.
+
+```bash
+docker compose up -d        # PostgreSQL 17 컨테이너 시작
+docker compose ps           # 상태 확인
+docker compose down         # 중지 (데이터는 볼륨에 유지)
+docker compose down -v      # 중지 + 데이터 삭제
+```
+
+컨테이너는 `127.0.0.1`에만 열려 있어 외부에서 접속할 수 없습니다.
+
+### 방법 2: 직접 설치
+
+1. [PostgreSQL 공식 사이트](https://www.postgresql.org/download/)에서 설치합니다. (Windows: `winget install PostgreSQL.PostgreSQL.17`)
+2. `psql -U postgres`로 접속해 `.env`와 같은 값으로 사용자와 DB를 만듭니다.
+
+```sql
+CREATE USER shinchon WITH PASSWORD '<비밀번호>';
+CREATE DATABASE shinchon_dev OWNER shinchon;
+```
+
+### 연결 확인
+
+```bash
+python manage.py shell -c "from django.db import connection; connection.ensure_connection(); print(connection.settings_dict['HOST'], connection.pg_version)"
+```
 
 ## 인증 API (JWT)
 

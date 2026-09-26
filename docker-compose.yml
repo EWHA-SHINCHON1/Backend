@@ -1,0 +1,19 @@
+# 로컬 개발용 PostgreSQL
+# 사용법: docker compose up -d  (값은 프로젝트 루트의 .env에서 읽습니다)
+services:
+  db:
+    image: postgres:17
+    container_name: shinchon-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME을 .env에 설정하세요}
+      POSTGRES_USER: ${DB_USER:?DB_USER를 .env에 설정하세요}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 .env에 설정하세요}
+      TZ: Asia/Seoul
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

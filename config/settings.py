@@ -27,6 +27,8 @@ env = environ.Env(
     CSRF_TRUSTED_ORIGINS=(list, []),
     JWT_ACCESS_TOKEN_LIFETIME_MINUTES=(int, 30),
     JWT_REFRESH_TOKEN_LIFETIME_DAYS=(int, 7),
+    DB_HOST=(str, 'localhost'),
+    DB_PORT=(int, 5432),
 )
 environ.Env.read_env(BASE_DIR / '.env')
 
@@ -93,12 +95,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-# TODO: 4단계에서 환경변수 기반 PostgreSQL 설정으로 교체합니다.
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': env('DB_NAME'),
+        'USER': env('DB_USER'),
+        'PASSWORD': env('DB_PASSWORD'),
+        'HOST': env('DB_HOST'),
+        'PORT': env('DB_PORT'),
+        'CONN_MAX_AGE': 60,
+        'CONN_HEALTH_CHECKS': True,
+        'OPTIONS': {
+            'connect_timeout': 5,
+        },
     }
 }
 
