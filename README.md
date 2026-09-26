@@ -4,6 +4,31 @@
 ## 개발 환경
 
 - Python 3.11
+- Django 5.2 (LTS) + Django REST framework + Simple JWT
+- PostgreSQL 17
+
+## 빠른 시작
+
+처음 받은 뒤 아래 순서대로 실행합니다. 자세한 설명은 각 섹션을 참고하세요.
+
+```powershell
+# 1. 가상환경 생성·활성화
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 2. 의존성 설치
+pip install -r requirements.txt
+
+# 3. 환경변수 파일 생성 후 SECRET_KEY, DB_PASSWORD 입력
+Copy-Item .env.example .env
+
+# 4. 로컬 PostgreSQL 시작 (Docker Desktop 실행 필요)
+docker compose up -d
+
+# 5. 마이그레이션 적용 및 서버 실행
+python manage.py migrate
+python manage.py runserver
+```
 
 ## 가상환경
 
@@ -91,8 +116,11 @@ pip freeze --exclude pip | Out-File -Encoding ascii requirements.txt
 │   ├── settings.py
 │   └── urls.py
 ├── users/               # 사용자 앱 (커스텀 User 모델)
+│   ├── migrations/
+│   └── tests.py         # 사용자 모델·JWT 인증 테스트
 ├── manage.py
 ├── requirements.txt
+├── docker-compose.yml   # 로컬 개발용 PostgreSQL
 └── .env.example         # 환경변수 예시
 ```
 
@@ -166,6 +194,7 @@ docker compose down -v      # 중지 + 데이터 삭제
 ```sql
 CREATE USER shinchon WITH PASSWORD '<비밀번호>';
 CREATE DATABASE shinchon_dev OWNER shinchon;
+ALTER USER shinchon CREATEDB;  -- 테스트 실행 시 테스트 DB 생성에 필요
 ```
 
 ### 연결 확인
@@ -173,6 +202,34 @@ CREATE DATABASE shinchon_dev OWNER shinchon;
 ```bash
 python manage.py shell -c "from django.db import connection; connection.ensure_connection(); print(connection.settings_dict['HOST'], connection.pg_version)"
 ```
+
+## 마이그레이션
+
+모델을 바꾼 뒤에는 마이그레이션 파일을 만들고 적용합니다. 마이그레이션 파일(`*/migrations/*.py`)은 커밋합니다.
+
+```bash
+python manage.py makemigrations   # 마이그레이션 파일 생성
+python manage.py migrate          # DB에 적용
+python manage.py showmigrations   # 적용 상태 확인
+```
+
+## 실행
+
+```bash
+python manage.py createsuperuser  # 관리자 계정 생성 (최초 1회)
+python manage.py runserver        # http://127.0.0.1:8000
+```
+
+관리자 페이지는 http://127.0.0.1:8000/admin/ 입니다.
+
+## 테스트
+
+```bash
+python manage.py check   # 설정 검사
+python manage.py test    # 전체 테스트
+```
+
+테스트는 PostgreSQL에 임시 DB(`test_<DB_NAME>`)를 만들어 실행하고, 끝나면 삭제합니다. 개발 DB 데이터에는 영향이 없습니다.
 
 ## 인증 API (JWT)
 
@@ -183,3 +240,14 @@ python manage.py shell -c "from django.db import connection; connection.ensure_c
 | POST | `/api/auth/token/verify/` | `token` 유효성 확인 |
 
 인증이 필요한 요청에는 `Authorization: Bearer <access 토큰>` 헤더를 붙입니다.
+
+```bash
+# 토큰 발급
+curl -X POST http://127.0.0.1:8000/api/auth/token/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "<아이디>", "password": "<비밀번호>"}'
+# 응답: {"refresh": "...", "access": "..."}
+
+# 인증이 필요한 API 호출
+curl http://127.0.0.1:8000/api/... -H "Authorization: Bearer <access 토큰>"
+```
