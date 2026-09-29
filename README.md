@@ -115,21 +115,14 @@ pip freeze --exclude pip | Out-File -Encoding ascii requirements.txt
 │   ├── formats/ko/      # 한국어 날짜·숫자 형식
 │   ├── settings.py
 │   └── urls.py
-├── users/               # User, SocialAccount, 인증
+├── users/               # 사용자 앱 (커스텀 User 모델)
 │   ├── migrations/
-│   └── tests/
-├── stores/              # Store, StoreMenu, StoreAccessToken
-├── promotions/          # Promotion, PromotionEvent
-├── coupons/             # Coupon
-├── docs/
-│   └── models.md        # 모델 계약 (필드·제약·삭제 정책·계산값)
+│   └── tests.py         # 사용자 모델·JWT 인증 테스트
 ├── manage.py
 ├── requirements.txt
 ├── docker-compose.yml   # 로컬 개발용 PostgreSQL
 └── .env.example         # 환경변수 예시
 ```
-
-모델 필드·관계·삭제 정책은 [docs/models.md](docs/models.md)를 참고하세요.
 
 ## 환경변수
 
