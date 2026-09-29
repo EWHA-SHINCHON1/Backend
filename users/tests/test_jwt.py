@@ -26,7 +26,7 @@ class UserModelTests(TestCase):
         self.assertEqual(User._meta.db_table, 'users')
 
 
-@override_settings(ROOT_URLCONF='users.tests')
+@override_settings(ROOT_URLCONF='users.tests.test_jwt')
 class JWTAuthTests(TestCase):
     username = 'tester'
     password = 'test-password-1234'
