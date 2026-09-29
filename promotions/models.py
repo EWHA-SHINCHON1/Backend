@@ -69,10 +69,20 @@ class Promotion(models.Model):
         now = now or timezone.now()
         return self.starts_at <= now < self.ends_at
 
-    def get_status(self, *, issued_count, now=None):
+    @property
+    def issued_count(self):
+        """발급된 쿠폰 수. 별도 카운터 컬럼 없이 연결된 Coupon 수로 계산합니다."""
+        return self.coupons.count()
+
+    @property
+    def remaining_quantity(self):
+        return max(self.total_quantity - self.issued_count, 0)
+
+    def get_status(self, *, issued_count=None, now=None):
         """우선순위: hidden → upcoming → ended → sold_out → active
 
-        issued_count(발급된 쿠폰 수)는 Coupon 모델 연결 전까지 호출하는 쪽에서 넘깁니다.
+        목록 조회에서 annotate로 발급 수를 미리 구했다면 issued_count로 넘겨 추가 쿼리를 피할 수 있습니다.
+        넘기지 않으면 소진 여부를 판단할 때만 Coupon 수를 셉니다.
         """
         now = now or timezone.now()
         if not self.is_published:
@@ -81,6 +91,8 @@ class Promotion(models.Model):
             return self.Status.UPCOMING
         if now >= self.ends_at:
             return self.Status.ENDED
+        if issued_count is None:
+            issued_count = self.issued_count
         if issued_count >= self.total_quantity:
             return self.Status.SOLD_OUT
         return self.Status.ACTIVE
