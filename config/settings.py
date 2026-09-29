@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     # Local
     'users',
     'stores',
+    'promotions',
 ]
 
 MIDDLEWARE = [
