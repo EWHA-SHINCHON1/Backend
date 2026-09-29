@@ -60,6 +60,9 @@ INSTALLED_APPS = [
     'corsheaders',
     # Local
     'users',
+    'stores',
+    'promotions',
+    'coupons',
 ]
 
 MIDDLEWARE = [
