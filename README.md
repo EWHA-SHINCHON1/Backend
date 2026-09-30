@@ -265,8 +265,50 @@ Base URL: `/api/v1/`
 | --- | --- | --- | --- |
 | GET | `auth/kakao/start/` | 카카오 로그인 시작 (브라우저 이동) | 구현 |
 | GET | `auth/kakao/callback/` | 카카오가 돌려보내는 주소. 로그인 처리 후 프론트로 이동 | 구현 |
-| GET | `auth/me/` | 현재 로그인 사용자 | 예정 |
-| POST | `auth/logout/` | 로그아웃 | 예정 |
+| GET | `auth/me/` | 현재 로그인 사용자 (+ `csrftoken` 쿠키 발급) | 구현 |
+| POST | `auth/logout/` | 로그아웃 | 구현 |
+
+### `GET /api/v1/auth/me/`
+
+로그인 여부와 관계없이 `200`입니다.
+
+```json
+// 로그인
+{"id": 7, "nickname": "연우", "is_authenticated": true}
+
+// 비로그인
+{"id": null, "nickname": null, "is_authenticated": false}
+```
+
+- 응답과 함께 `csrftoken` 쿠키를 내려줍니다. 앱 첫 화면에서 한 번 호출해 두면 이후 POST 요청에 쓸 수 있습니다.
+- `nickname`은 빈 문자열(`""`)일 수 있습니다. (카카오 닉네임 미동의)
+
+### `POST /api/v1/auth/logout/`
+
+- 성공: `204 No Content` (본문 없음). 이미 로그아웃된 상태여도 `204`입니다.
+- 로그인 상태에서는 `X-CSRFToken` 헤더가 필요합니다. 없으면 `403 CSRF_FAILED`.
+- 우리 서비스 세션만 끝냅니다. 카카오 계정 로그아웃·연결 해제는 하지 않습니다.
+
+### 공통 오류 형식
+
+모든 JSON API 오류는 아래 형식입니다.
+
+```json
+{"error": {"code": "AUTHENTICATION_REQUIRED", "message": "로그인이 필요합니다."}}
+```
+
+| HTTP | code | 상황 |
+| --- | --- | --- |
+| 401 | `AUTHENTICATION_REQUIRED` | 로그인이 필요한 API를 비로그인으로 호출 |
+| 403 | `CSRF_FAILED` | 쓰기 요청에 `X-CSRFToken` 헤더가 없거나 틀림 |
+| 403 | `PERMISSION_DENIED` | 로그인했지만 권한 없음 |
+| 400 | `VALIDATION_ERROR` | 입력값 오류. 필드별 내용은 `error.details`에 담김 |
+| 400 | `BAD_REQUEST` | JSON 형식 오류 등 |
+| 404 | `NOT_FOUND` | 대상 없음 |
+| 405 | `METHOD_NOT_ALLOWED` | 허용되지 않은 요청 방식 |
+| 429 | `TOO_MANY_REQUESTS` | 요청 횟수 초과 |
+
+HTTP 상태와 `details` 필드는 명세에 없던 값으로, 제안입니다. 카카오 로그인 실패는 JSON이 아니라 프론트 `/login?error=<코드>`로 이동합니다(위 표 참고).
 
 ### 카카오 로그인 흐름
 
@@ -302,8 +344,30 @@ Base URL: `/api/v1/`
 ### 프론트에서 지켜야 할 것
 
 - API 요청에 **쿠키를 포함**해야 합니다. (`fetch(url, { credentials: 'include' })`, axios는 `withCredentials: true`)
+- 로그인 쿠키(`sessionid`)는 HttpOnly라 JS에서 읽을 수 없고, 읽을 필요도 없습니다. 브라우저가 자동으로 보냅니다.
 - POST·PUT·PATCH·DELETE 요청에는 `csrftoken` 쿠키 값을 **`X-CSRFToken` 헤더**로 보내야 합니다.
+  - `csrftoken` 쿠키는 `GET auth/me/`를 호출하면 받습니다.
+  - 로그인 직후에는 CSRF 토큰이 바뀌므로, 로그인에서 돌아오면 `me`를 다시 호출해 새 값을 쓰세요.
 - 개발 시 프론트와 API 주소의 호스트를 맞추세요. 프론트가 `localhost:3000`이면 API도 `localhost:8000`으로 부릅니다. (`localhost`와 `127.0.0.1`은 쿠키가 따로 관리됩니다)
+
+```js
+// 예시 (fetch)
+const API = 'http://localhost:8000/api/v1';
+const getCookie = (name) => document.cookie.split('; ').find((c) => c.startsWith(name + '='))?.split('=')[1];
+
+// 로그인 상태 확인 (+ csrftoken 쿠키 받기)
+const me = await fetch(`${API}/auth/me/`, { credentials: 'include' }).then((r) => r.json());
+
+// 로그인 시작 (페이지 이동)
+window.location.href = `${API}/auth/kakao/start/?next=/promotions/12`;
+
+// 로그아웃
+await fetch(`${API}/auth/logout/`, {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'X-CSRFToken': getCookie('csrftoken') },
+});
+```
 
 ### 카카오 개발자 콘솔 설정
 

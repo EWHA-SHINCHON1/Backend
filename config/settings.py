@@ -212,6 +212,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # 오류 응답 형식: {"error": {"code": ..., "message": ...}}
+    'EXCEPTION_HANDLER': 'config.exceptions.custom_exception_handler',
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S%z',
     'DATE_FORMAT': '%Y-%m-%d',
     'TIME_FORMAT': '%H:%M:%S',

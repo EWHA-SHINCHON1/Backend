@@ -5,10 +5,18 @@ import time
 from urllib.parse import urlencode
 
 from django.conf import settings
-from django.contrib.auth import login
+from django.contrib.auth import login, logout
 from django.http import HttpResponseRedirect
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
+from users.serializers import MeSerializer
 from users.services import kakao
 
 logger = logging.getLogger(__name__)
@@ -103,3 +111,31 @@ def kakao_callback(request):
 
     login(request, user, backend='django.contrib.auth.backends.ModelBackend')
     return _frontend_redirect(get_safe_next_path(pending.get('next')))
+
+
+@method_decorator([never_cache, ensure_csrf_cookie], name='get')
+class MeView(APIView):
+    """현재 로그인 사용자.
+
+    비로그인도 200으로 is_authenticated=false를 돌려줍니다.
+    프론트가 이후 POST 요청에 쓸 수 있도록 csrftoken 쿠키도 함께 내려줍니다.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response(MeSerializer(request.user).data)
+
+
+class LogoutView(APIView):
+    """서비스 로그아웃: 세션을 삭제합니다. 카카오 연결 해제(탈퇴)와는 별개입니다.
+
+    로그인 상태에서는 CSRF 토큰(X-CSRFToken 헤더)이 필요합니다.
+    이미 로그아웃된 상태여도 204를 돌려줍니다.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        logout(request)
+        return Response(status=status.HTTP_204_NO_CONTENT)

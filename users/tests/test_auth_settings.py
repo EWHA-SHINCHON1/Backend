@@ -33,7 +33,10 @@ class SessionAuthSettingsTests(TestCase):
 
     def test_anonymous_request_is_rejected(self):
         response = APIClient().get('/test/protected/')
-        self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json(), {
+            'error': {'code': 'AUTHENTICATION_REQUIRED', 'message': '로그인이 필요합니다.'},
+        })
 
     def test_session_login_is_authenticated(self):
         client = APIClient()
@@ -47,6 +50,7 @@ class SessionAuthSettingsTests(TestCase):
         client.force_login(self.user)
         response = client.post('/test/protected/')
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()['error']['code'], 'CSRF_FAILED')
 
     def test_write_request_with_csrf_token_succeeds(self):
         client = APIClient(enforce_csrf_checks=True)
@@ -61,7 +65,7 @@ class SessionAuthSettingsTests(TestCase):
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION='Bearer anything')
         response = client.get('/test/protected/')
-        self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(response.status_code, 401)
 
     def test_old_jwt_endpoint_is_removed(self):
         response = APIClient().post('/api/auth/token/', {'username': 'u1', 'password': 'x'})
