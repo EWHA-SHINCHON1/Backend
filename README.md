@@ -162,7 +162,8 @@ python -c "from django.core.management.utils import get_random_secret_key; print
 | `CSRF_COOKIE_SECURE` | | `False` | 운영(HTTPS)에서 `True` |
 | `CSRF_COOKIE_DOMAIN` | | (없음) | 운영에서 상위 도메인 (예: `.godgoowm.com`). 개발에서는 비움 |
 | `KAKAO_REST_API_KEY` | 카카오 로그인 시 | - | 카카오 앱의 **REST API 키** |
-| `KAKAO_CLIENT_SECRET` | 콘솔에서 사용 시 | - | 카카오 Client Secret. 콘솔에서 '사용함'이면 필수 |
+| `KAKAO_CLIENT_SECRET` | 카카오 로그인 시 | - | 카카오 Client Secret (카카오 앱 기본값이 '사용함'이라 필수) |
+| `KAKAO_CLIENT_SECRET_ENABLED` | | `True` | 콘솔에서 Client Secret을 '사용 안 함'으로 바꾼 경우에만 `False` |
 | `KAKAO_REDIRECT_URI` | 카카오 로그인 시 | - | 콘솔에 등록한 Redirect URI와 **정확히** 같은 값 |
 | `FRONTEND_BASE_URL` | | `http://localhost:3000` | 로그인 후 돌아갈 프론트 주소 (끝에 `/` 없이) |
 
@@ -256,16 +257,47 @@ python manage.py test    # 전체 테스트
 | 비로그인 `GET /api/v1/auth/me/` | `200` `{"id": null, "nickname": null, "is_authenticated": false}` |
 | 로그아웃 | `POST /api/v1/auth/logout/` → `204`. 카카오 연결 해제(탈퇴)와 별개 |
 
-### API (구현 예정)
+### API
 
 Base URL: `/api/v1/`
 
-| Method | 경로 | 설명 |
-| --- | --- | --- |
-| GET | `auth/kakao/start/` | 카카오 로그인 시작 (브라우저 이동) |
-| GET | `auth/kakao/callback/` | 카카오가 돌려보내는 주소. 로그인 처리 후 프론트로 이동 |
-| GET | `auth/me/` | 현재 로그인 사용자 |
-| POST | `auth/logout/` | 로그아웃 |
+| Method | 경로 | 설명 | 상태 |
+| --- | --- | --- | --- |
+| GET | `auth/kakao/start/` | 카카오 로그인 시작 (브라우저 이동) | 구현 |
+| GET | `auth/kakao/callback/` | 카카오가 돌려보내는 주소. 로그인 처리 후 프론트로 이동 | 구현 |
+| GET | `auth/me/` | 현재 로그인 사용자 | 예정 |
+| POST | `auth/logout/` | 로그아웃 | 예정 |
+
+### 카카오 로그인 흐름
+
+1. 프론트의 '쿠폰 받기' 등에서 브라우저를 아래 주소로 **이동**시킵니다. (fetch/axios 호출이 아니라 `window.location.href` 이동)
+   ```
+   {API 주소}/api/v1/auth/kakao/start/?next=/promotions/12
+   ```
+   - `next`: 로그인 후 돌아갈 프론트 경로. `/` 또는 `/promotions/{id}`만 허용하며, 그 외 값은 `/`로 바뀝니다.
+2. 카카오 로그인·동의 화면을 거쳐 백엔드 `auth/kakao/callback/`으로 돌아옵니다.
+3. 백엔드가 사용자를 확인하고 **세션 쿠키로 로그인**시킨 뒤 프론트로 이동시킵니다.
+   - 성공: `{FRONTEND_BASE_URL}{next}` (예: `/promotions/12`)
+   - 실패: `{FRONTEND_BASE_URL}/login?error=<오류 코드>`
+4. 쿠폰은 자동으로 발급되지 않습니다. 돌아온 뒤 프론트가 쿠폰 발급 API를 따로 호출합니다.
+
+**로그인 실패 오류 코드 (제안)**
+
+| 코드 | 상황 |
+| --- | --- |
+| `LOGIN_CANCELLED` | 사용자가 카카오 로그인·동의를 취소 |
+| `INVALID_STATE` | 로그인 요청 검증 실패 (만료 10분, 재사용, 다른 브라우저, 위조) → 다시 시도 |
+| `INVALID_REQUEST` | 카카오 응답에 인가 코드가 없음 |
+| `KAKAO_AUTH_FAILED` | 카카오 토큰·사용자 정보 조회 실패 (네트워크, 카카오 오류) |
+| `INACTIVE_USER` | 비활성화된 계정 |
+| `KAKAO_NOT_CONFIGURED` | 서버에 카카오 키 설정이 없음 (개발 환경 확인) |
+
+**계정 연결 규칙**
+
+- 카카오 회원번호로 사용자를 식별합니다. 같은 카카오 계정이면 항상 같은 사용자로 로그인됩니다.
+- 처음 로그인하면 사용자를 자동으로 만듭니다. 비밀번호는 없고(`has_usable_password() == False`), 관리자 권한도 없습니다.
+- 닉네임은 카카오 닉네임을 가져오며, 동의하지 않았으면 빈 값입니다. 이미 닉네임이 있으면 덮어쓰지 않습니다.
+- 카카오 토큰은 저장하지 않습니다.
 
 ### 프론트에서 지켜야 할 것
 
@@ -283,7 +315,7 @@ Base URL: `/api/v1/`
    - 개발: `http://localhost:8000/api/v1/auth/kakao/callback/`
    - 운영: `https://api.<도메인>/api/v1/auth/kakao/callback/`
 4. **동의항목**: `닉네임`을 선택 동의로 설정합니다. 이메일은 필요하지 않습니다.
-5. **Client Secret** (보안 메뉴): '사용함'이면 코드를 발급받아 `KAKAO_CLIENT_SECRET`에 넣습니다.
+5. **Client Secret** (보안 메뉴): 기본값이 '사용함'입니다. 코드를 확인해 `KAKAO_CLIENT_SECRET`에 넣습니다. '사용 안 함'으로 바꿨다면 `KAKAO_CLIENT_SECRET_ENABLED=False`로 둡니다.
 
 키와 Client Secret은 `.env`에만 넣고 커밋하거나 공유하지 마세요.
 

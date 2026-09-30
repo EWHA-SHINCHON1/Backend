@@ -1,7 +1,11 @@
-from django.urls import path  # noqa: F401
+from django.urls import path
+
+from users import views
 
 app_name = 'users'
 
 # /api/v1/auth/
-# 카카오 start/callback, me, logout은 다음 단계에서 추가합니다.
-urlpatterns = []
+urlpatterns = [
+    path('kakao/start/', views.kakao_start, name='kakao_start'),
+    path('kakao/callback/', views.kakao_callback, name='kakao_callback'),
+]

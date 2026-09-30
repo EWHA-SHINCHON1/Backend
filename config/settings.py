@@ -29,6 +29,7 @@ env = environ.Env(
     CSRF_COOKIE_DOMAIN=(str, ''),
     KAKAO_REST_API_KEY=(str, ''),
     KAKAO_CLIENT_SECRET=(str, ''),
+    KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
     KAKAO_REDIRECT_URI=(str, ''),
     FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
     DB_HOST=(str, 'localhost'),
@@ -222,8 +223,10 @@ REST_FRAMEWORK = {
 # 키가 없어도 서버는 실행되며, 카카오 로그인 요청 시에만 설정 누락 오류를 냅니다.
 
 KAKAO_REST_API_KEY = env('KAKAO_REST_API_KEY')
-# 카카오 콘솔에서 Client Secret을 '사용함'으로 설정했다면 반드시 입력해야 합니다.
+# 카카오 앱의 Client Secret은 기본값이 '사용함'이며, 이 경우 토큰 요청에 반드시 포함해야 합니다.
+# 콘솔에서 '사용 안 함'으로 바꾼 경우에만 KAKAO_CLIENT_SECRET_ENABLED=False로 둡니다.
 KAKAO_CLIENT_SECRET = env('KAKAO_CLIENT_SECRET')
+KAKAO_CLIENT_SECRET_ENABLED = env('KAKAO_CLIENT_SECRET_ENABLED')
 # 카카오 콘솔에 등록한 Redirect URI와 정확히 같아야 합니다.
 KAKAO_REDIRECT_URI = env('KAKAO_REDIRECT_URI')
 # 로그인 후 돌아갈 프론트엔드 주소 (끝에 / 없이)
