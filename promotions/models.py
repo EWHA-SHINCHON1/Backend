@@ -9,8 +9,9 @@ class Promotion(models.Model):
     """매장 프로모션.
 
     status는 저장하지 않고 get_status()로 계산합니다.
-    - 신규 쿠폰 발급 기간: starts_at <= now < ends_at
-    - 이미 발급된 쿠폰은 발급 기간이 끝나도 자신의 expires_at까지 사용합니다.
+    - 프로모션 유효 기간: starts_at <= now < ends_at
+    - 쿠폰형 프로모션의 신규 발급 가능 기간도 프로모션 유효 기간과 같습니다.
+    - 이미 발급된 쿠폰은 유효 기간이 끝나도 자신의 expires_at까지 사용합니다.
     """
 
     class Status(models.TextChoices):
@@ -32,10 +33,11 @@ class Promotion(models.Model):
     benefit = models.CharField('혜택', max_length=200, blank=True, default='')
     terms = models.TextField('이용 조건', blank=True, default='')
     image_url = models.URLField('대표 이미지 URL', max_length=500, blank=True, default='')
-    starts_at = models.DateTimeField('발급 시작')
-    ends_at = models.DateTimeField('발급 종료')
-    redeem_until = models.DateTimeField('사용 종료')
-    total_quantity = models.PositiveIntegerField('총 발급 수량')
+    starts_at = models.DateTimeField('프로모션 시작')
+    ends_at = models.DateTimeField('프로모션 종료')
+    requires_coupon = models.BooleanField('쿠폰 필요 여부', default=True)
+    redeem_until = models.DateTimeField('쿠폰 사용 종료', null=True, blank=True)
+    total_quantity = models.PositiveIntegerField('총 쿠폰 발급 수량', null=True, blank=True)
     # 운영자 검수 전 노출을 막기 위해 기본값은 비공개입니다.
     is_published = models.BooleanField('공개 여부', default=False)
     featured_rank = models.PositiveIntegerField('추천 노출 순위', null=True, blank=True)
@@ -52,22 +54,41 @@ class Promotion(models.Model):
                 name='promotion_starts_before_ends',
             ),
             models.CheckConstraint(
-                condition=Q(ends_at__lte=F('redeem_until')),
+                condition=(
+                    Q(requires_coupon=False)
+                    | Q(ends_at__lte=F('redeem_until'))
+                ),
                 name='promotion_ends_before_redeem_until',
             ),
             models.CheckConstraint(
-                condition=Q(total_quantity__gt=0),
-                name='promotion_total_quantity_positive',
+                condition=(
+                    Q(
+                        requires_coupon=True,
+                        redeem_until__isnull=False,
+                        total_quantity__isnull=False,
+                        total_quantity__gt=0,
+                    )
+                    | Q(
+                        requires_coupon=False,
+                        redeem_until__isnull=True,
+                        total_quantity__isnull=True,
+                    )
+                ),
+                name='promotion_coupon_fields_valid',
             ),
         ]
 
     def __str__(self):
         return self.title
 
-    def is_in_issue_period(self, now=None):
-        """신규 쿠폰 발급 기간인지 (수량·공개 여부는 보지 않음)."""
+    def is_in_active_period(self, now=None):
+        """프로모션 유효 기간인지 (공개 여부는 보지 않음)."""
         now = now or timezone.now()
         return self.starts_at <= now < self.ends_at
+
+    def is_in_issue_period(self, now=None):
+        """신규 쿠폰 발급 기간인지 (수량·공개 여부는 보지 않음)."""
+        return self.is_in_active_period(now)
 
     @property
     def issued_count(self):
@@ -76,6 +97,8 @@ class Promotion(models.Model):
 
     @property
     def remaining_quantity(self):
+        if not self.requires_coupon:
+            return None
         return max(self.total_quantity - self.issued_count, 0)
 
     def get_status(self, *, issued_count=None, now=None):
@@ -91,6 +114,8 @@ class Promotion(models.Model):
             return self.Status.UPCOMING
         if now >= self.ends_at:
             return self.Status.ENDED
+        if not self.requires_coupon:
+            return self.Status.ACTIVE
         if issued_count is None:
             issued_count = self.issued_count
         if issued_count >= self.total_quantity:
