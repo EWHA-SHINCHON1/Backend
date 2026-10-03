@@ -8,6 +8,12 @@ from users.models import SocialAccount
 User = get_user_model()
 
 
+class UserModelSettingTests(TestCase):
+    def test_auth_user_model(self):
+        self.assertEqual(User._meta.label, 'users.User')
+        self.assertEqual(User._meta.db_table, 'users')
+
+
 class UserNicknameTests(TestCase):
     def test_nickname_defaults_to_empty_string(self):
         user = User.objects.create_user(username='u1')
