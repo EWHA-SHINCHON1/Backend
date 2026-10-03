@@ -230,24 +230,4 @@ python manage.py test    # 전체 테스트
 ```
 
 테스트는 PostgreSQL에 임시 DB(`test_<DB_NAME>`)를 만들어 실행하고, 끝나면 삭제합니다. 개발 DB 데이터에는 영향이 없습니다.
-
-## 인증 API (JWT)
-
-| Method | URL | 설명 |
-| --- | --- | --- |
-| POST | `/api/auth/token/` | `username`, `password`로 access/refresh 토큰 발급 |
-| POST | `/api/auth/token/refresh/` | `refresh`로 새 access 토큰 발급 |
-| POST | `/api/auth/token/verify/` | `token` 유효성 확인 |
-
-인증이 필요한 요청에는 `Authorization: Bearer <access 토큰>` 헤더를 붙입니다.
-
-```bash
-# 토큰 발급
-curl -X POST http://127.0.0.1:8000/api/auth/token/ \
-  -H "Content-Type: application/json" \
-  -d '{"username": "<아이디>", "password": "<비밀번호>"}'
-# 응답: {"refresh": "...", "access": "..."}
-
-# 인증이 필요한 API 호출
-curl http://127.0.0.1:8000/api/... -H "Authorization: Bearer <access 토큰>"
 ```
