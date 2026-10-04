@@ -5,6 +5,18 @@ from django.db import models
 from django.utils import timezone
 
 
+class CouponQuerySet(models.QuerySet):
+    def filter_status(self, status, now):
+        """get_status()와 같은 규칙으로 상태별 쿠폰만 남깁니다. now는 한 요청의 기준 시각입니다."""
+        if status == Coupon.Status.USED:
+            return self.filter(used_at__isnull=False)
+        if status == Coupon.Status.EXPIRED:
+            return self.filter(used_at__isnull=True, expires_at__lte=now)
+        if status == Coupon.Status.AVAILABLE:
+            return self.filter(used_at__isnull=True, expires_at__gt=now)
+        raise ValueError(f'Unknown coupon status: {status!r}')
+
+
 class Coupon(models.Model):
     """사용자에게 발급된 프로모션 쿠폰.
 
@@ -37,6 +49,8 @@ class Coupon(models.Model):
     issued_at = models.DateTimeField('발급 시각', default=timezone.now)
     expires_at = models.DateTimeField('사용 기한')
     used_at = models.DateTimeField('사용 시각', null=True, blank=True)
+
+    objects = CouponQuerySet.as_manager()
 
     class Meta:
         db_table = 'coupons'
