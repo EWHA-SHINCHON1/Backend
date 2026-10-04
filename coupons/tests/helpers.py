@@ -75,8 +75,11 @@ def run_in_thread(func, results, key):
     return thread
 
 
-def wait_for_lock_waiter(timeout=10):
-    """현재 테스트 DB에서 행 잠금을 기다리는 다른 연결이 생길 때까지 기다린다."""
+def wait_for_lock_waiter(timeout=60):
+    """현재 테스트 DB에서 행 잠금을 기다리는 다른 연결이 생길 때까지 기다린다.
+
+    잠금 대기가 생기면 바로 돌아오므로 timeout은 느린 로컬 DB(Docker)에서도 넉넉하게 둔다.
+    """
     deadline = time.monotonic() + timeout
     with connection.cursor() as cursor:
         while time.monotonic() < deadline:
