@@ -44,3 +44,21 @@ class MyCouponSerializer(CouponStatusMixin, serializers.ModelSerializer):
     class Meta:
         model = Coupon
         fields = ('id', 'status', 'issued_at', 'expires_at', 'used_at', 'promotion')
+
+
+class CouponStoreDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Store
+        fields = ('id', 'name', 'address', 'business_hours', 'map_url')
+
+
+class CouponPromotionDetailSerializer(serializers.ModelSerializer):
+    store = CouponStoreDetailSerializer()
+
+    class Meta:
+        model = Promotion
+        fields = ('id', 'title', 'benefit', 'terms', 'image_url', 'store')
+
+
+class MyCouponDetailSerializer(MyCouponSerializer):
+    promotion = CouponPromotionDetailSerializer()

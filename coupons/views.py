@@ -1,13 +1,13 @@
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.generics import ListAPIView
+from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from coupons.exceptions import InvalidCouponStatus
+from coupons.exceptions import CouponNotFound, InvalidCouponStatus
 from coupons.models import Coupon
 from coupons.pagination import MyCouponPagination
-from coupons.serializers import IssuedCouponSerializer, MyCouponSerializer
+from coupons.serializers import IssuedCouponSerializer, MyCouponDetailSerializer, MyCouponSerializer
 from coupons.services import issue_coupon
 
 
@@ -57,3 +57,25 @@ class MyCouponListView(ListAPIView):
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), 'now': self.now}
+
+
+class MyCouponDetailView(RetrieveAPIView):
+    """내 쿠폰 상세: GET /api/v1/me/coupons/{coupon_id}/
+
+    쿠폰 UUID와 로그인 사용자로 함께 조회하므로 없는 쿠폰과 다른 사람의 쿠폰은 모두 404(COUPON_NOT_FOUND).
+    종료·비공개 프로모션의 쿠폰도 조회할 수 있습니다.
+    """
+
+    serializer_class = MyCouponDetailSerializer
+
+    def get_object(self):
+        try:
+            return Coupon.objects.select_related('promotion__store').get(
+                pk=self.kwargs['coupon_id'],
+                user=self.request.user,
+            )
+        except Coupon.DoesNotExist:
+            raise CouponNotFound
+
+    def get_serializer_context(self):
+        return {**super().get_serializer_context(), 'now': timezone.now()}
