@@ -11,6 +11,7 @@ from django.urls import include, path
 
 api_v1_patterns = [
     path('auth/', include('users.urls')),
+    path('', include('coupons.urls')),
 ]
 
 urlpatterns = [
