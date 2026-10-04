@@ -10,7 +10,6 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -25,8 +24,14 @@ env = environ.Env(
     ALLOWED_HOSTS=(list, []),
     CORS_ALLOWED_ORIGINS=(list, []),
     CSRF_TRUSTED_ORIGINS=(list, []),
-    JWT_ACCESS_TOKEN_LIFETIME_MINUTES=(int, 30),
-    JWT_REFRESH_TOKEN_LIFETIME_DAYS=(int, 7),
+    SESSION_COOKIE_SECURE=(bool, False),
+    CSRF_COOKIE_SECURE=(bool, False),
+    CSRF_COOKIE_DOMAIN=(str, ''),
+    KAKAO_REST_API_KEY=(str, ''),
+    KAKAO_CLIENT_SECRET=(str, ''),
+    KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
+    KAKAO_REDIRECT_URI=(str, ''),
+    FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
@@ -56,10 +61,12 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Third-party
     'rest_framework',
-    'rest_framework_simplejwt',
     'corsheaders',
     # Local
     'users',
+    'stores',
+    'promotions',
+    'coupons',
 ]
 
 MIDDLEWARE = [
@@ -181,27 +188,48 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS')
 
 
+# Session / CSRF cookies
+# 소비자 인증은 Django 세션 쿠키를 씁니다. 프론트·백엔드가 같은 도메인 아래에 배포되는 것을 전제로 합니다.
+# - 세션 쿠키: HttpOnly(기본값)라 JS에서 읽을 수 없습니다.
+# - SameSite=Lax(기본값): 카카오에서 callback으로 돌아오는 최상위 GET 이동에도 세션 쿠키가 전송됩니다.
+# - 운영(HTTPS)에서는 *_COOKIE_SECURE=True로 설정합니다.
+# - CSRF_COOKIE_DOMAIN: 운영에서 프론트(godgoowm.com)가 API 서버(api.godgoowm.com)의 csrftoken 쿠키를
+#   읽어야 하므로 '.godgoowm.com'처럼 상위 도메인을 지정합니다. 개발(localhost)에서는 비워 둡니다.
+
+SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE')
+CSRF_COOKIE_SECURE = env('CSRF_COOKIE_SECURE')
+CSRF_COOKIE_DOMAIN = env('CSRF_COOKIE_DOMAIN') or None
+
+
 # Django REST framework
 # https://www.django-rest-framework.org/api-guide/settings/
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # 로그인된 사용자의 쓰기 요청(POST 등)에는 CSRF 검사가 적용됩니다.
+        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # 오류 응답 형식: {"error": {"code": ..., "message": ...}}
+    'EXCEPTION_HANDLER': 'config.exceptions.custom_exception_handler',
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S%z',
     'DATE_FORMAT': '%Y-%m-%d',
     'TIME_FORMAT': '%H:%M:%S',
 }
 
 
-# Simple JWT
-# https://django-rest-framework-simplejwt.readthedocs.io/en/latest/settings.html
+# Kakao login
+# https://developers.kakao.com/docs/ko/kakaologin/rest-api
+# 키가 없어도 서버는 실행되며, 카카오 로그인 요청 시에만 설정 누락 오류를 냅니다.
 
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=env('JWT_ACCESS_TOKEN_LIFETIME_MINUTES')),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=env('JWT_REFRESH_TOKEN_LIFETIME_DAYS')),
-    'AUTH_HEADER_TYPES': ('Bearer',),
-}
+KAKAO_REST_API_KEY = env('KAKAO_REST_API_KEY')
+# 카카오 앱의 Client Secret은 기본값이 '사용함'이며, 이 경우 토큰 요청에 반드시 포함해야 합니다.
+# 콘솔에서 '사용 안 함'으로 바꾼 경우에만 KAKAO_CLIENT_SECRET_ENABLED=False로 둡니다.
+KAKAO_CLIENT_SECRET = env('KAKAO_CLIENT_SECRET')
+KAKAO_CLIENT_SECRET_ENABLED = env('KAKAO_CLIENT_SECRET_ENABLED')
+# 카카오 콘솔에 등록한 Redirect URI와 정확히 같아야 합니다.
+KAKAO_REDIRECT_URI = env('KAKAO_REDIRECT_URI')
+# 로그인 후 돌아갈 프론트엔드 주소 (끝에 / 없이)
+FRONTEND_BASE_URL = env('FRONTEND_BASE_URL').rstrip('/')
