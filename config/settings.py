@@ -9,9 +9,12 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import os
 from pathlib import Path
 
+import dj_database_url
+from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -31,7 +34,7 @@ env = environ.Env(
     KAKAO_CLIENT_SECRET=(str, ''),
     KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
     KAKAO_REDIRECT_URI=(str, ''),
-    FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
+    FRONTEND_BASE_URL=(str, 'http://localhost:5173'),
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
