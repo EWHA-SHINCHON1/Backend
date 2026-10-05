@@ -13,18 +13,19 @@ import os
 from pathlib import Path
 
 import dj_database_url
-from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
+
 import environ
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+
+# 프로젝트 기준 경로
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Environment variables
-# 프로젝트 루트의 .env 파일을 읽습니다. 이미 설정된 OS 환경변수가 우선합니다.
+
+# 환경변수의 자료형과 기본값
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, []),
+    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1']),
     CORS_ALLOWED_ORIGINS=(list, []),
     CSRF_TRUSTED_ORIGINS=(list, []),
     SESSION_COOKIE_SECURE=(bool, False),
@@ -38,18 +39,33 @@ env = environ.Env(
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
-environ.Env.read_env(BASE_DIR / '.env')
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
+# 로컬 .env 파일을 읽습니다.
+# Railway 등에서 이미 설정한 환경변수는 덮어쓰지 않습니다.
+environ.Env.read_env(BASE_DIR / '.env', overwrite=False)
 
-# SECURITY WARNING: keep the secret key used in production secret!
+
+# 실행 환경 구분
+# Railway에는 APP_ENV=production을 설정합니다.
+# 로컬에서 APP_ENV를 설정하지 않으면 development로 처리합니다.
+IS_PRODUCTION = env('APP_ENV', default='development') == 'production'
+
+if IS_PRODUCTION:
+    SECURE_PROXY_SSL_HEADER = (
+        "HTTP_X_FORWARDED_PROTO",
+        "https",
+    )
+
+    SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r"^health/$"]
+
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# Django 기본 보안 설정
 SECRET_KEY = env('SECRET_KEY')
-
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
-
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
 
@@ -75,6 +91,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -105,23 +122,37 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+database_url = os.getenv("DATABASE_URL")
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': env('DB_NAME'),
-        'USER': env('DB_USER'),
-        'PASSWORD': env('DB_PASSWORD'),
-        'HOST': env('DB_HOST'),
-        'PORT': env('DB_PORT'),
-        'CONN_MAX_AGE': 60,
-        'CONN_HEALTH_CHECKS': True,
-        'OPTIONS': {
-            'connect_timeout': 5,
-        },
+if database_url:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            database_url,
+            conn_max_age=60,
+            conn_health_checks=True,
+        )
     }
-}
-
+elif IS_PRODUCTION:
+    raise ImproperlyConfigured(
+        "운영 환경에는 DATABASE_URL이 필요합니다."
+    )
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ["DB_NAME"],
+            "USER": os.environ["DB_USER"],
+            "PASSWORD": os.environ["DB_PASSWORD"],
+            "HOST": os.getenv("DB_HOST", "localhost"),
+            "PORT": os.getenv("DB_PORT", "5432"),
+            "CONN_MAX_AGE": 60,
+            "CONN_HEALTH_CHECKS": True,
+            # Windows에서 localhost가 IPv6(::1)부터 시도할 때 무한 대기하지 않도록 합니다.
+            "OPTIONS": {
+                "connect_timeout": 5,
+            },
+        }
+    }
 
 # Custom user model
 # https://docs.djangoproject.com/en/5.2/topics/auth/customizing/#substituting-a-custom-user-model
@@ -199,8 +230,9 @@ CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS')
 # - CSRF_COOKIE_DOMAIN: 운영에서 프론트(godgoowm.com)가 API 서버(api.godgoowm.com)의 csrftoken 쿠키를
 #   읽어야 하므로 '.godgoowm.com'처럼 상위 도메인을 지정합니다. 개발(localhost)에서는 비워 둡니다.
 
-SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE')
-CSRF_COOKIE_SECURE = env('CSRF_COOKIE_SECURE')
+# 운영(APP_ENV=production)에서는 환경변수 값과 관계없이 항상 True입니다.
+SESSION_COOKIE_SECURE = IS_PRODUCTION or env('SESSION_COOKIE_SECURE')
+CSRF_COOKIE_SECURE = IS_PRODUCTION or env('CSRF_COOKIE_SECURE')
 CSRF_COOKIE_DOMAIN = env('CSRF_COOKIE_DOMAIN') or None
 
 
