@@ -51,6 +51,24 @@ class InvalidCouponStatus(APIException):
     default_detail = '지원하지 않는 쿠폰 상태입니다. available, used, expired 중 하나를 사용하세요.'
 
 
+class InvalidPinFormat(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_code = 'INVALID_PIN_FORMAT'
+    default_detail = 'PIN은 4자리 숫자로 입력해 주세요.'
+
+
+class PinNotSet(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = 'PIN_NOT_SET'
+    default_detail = '매장 PIN이 설정되지 않았습니다. 매장에 문의해 주세요.'
+
+
+class InvalidPin(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_code = 'INVALID_PIN'
+    default_detail = 'PIN이 올바르지 않습니다.'
+
+
 class CouponUseNotImplemented(APIException):
     """쿠폰 사용 API 개발 중 임시 응답. 4단계(사용 처리)에서 제거합니다."""
 

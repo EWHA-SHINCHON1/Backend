@@ -8,7 +8,7 @@ from coupons.exceptions import CouponNotFound, CouponUseNotImplemented, InvalidC
 from coupons.models import Coupon
 from coupons.pagination import MyCouponPagination
 from coupons.serializers import IssuedCouponSerializer, MyCouponDetailSerializer, MyCouponSerializer
-from coupons.services import issue_coupon
+from coupons.services import issue_coupon, verify_coupon_pin
 
 
 class PromotionCouponIssueView(APIView):
@@ -87,11 +87,14 @@ class MyCouponUseView(APIView):
     요청: {"pin": "0428"} — 점주가 사용자 휴대폰에서 매장 PIN을 입력합니다. CSRF 토큰(X-CSRFToken)이 필요합니다.
     쿠폰 UUID와 로그인 사용자로 함께 조회하므로 없는 쿠폰과 다른 사람의 쿠폰은 모두 404(COUPON_NOT_FOUND).
 
-    개발 단계: 현재는 로그인·소유자 확인까지만 하고 501을 돌려줍니다.
-    PIN 검증(2단계), 실패 횟수 제한(3단계), 사용 처리와 완료 응답(4단계)은 이후 단계에서 추가합니다.
+    오류 확인 순서: 쿠폰 없음(404) → PIN 형식(400 INVALID_PIN_FORMAT) → 매장 PIN 미설정(409 PIN_NOT_SET)
+    → PIN 불일치(400 INVALID_PIN).
+
+    개발 단계: 현재는 PIN 확인까지만 하고, PIN이 맞아도 쿠폰을 바꾸지 않고 501을 돌려줍니다.
+    실패 횟수 제한(3단계), 사용 처리와 완료 응답(4단계)은 이후 단계에서 추가합니다.
     """
 
     def post(self, request, coupon_id):
-        if not Coupon.objects.filter(pk=coupon_id, user=request.user).exists():
-            raise CouponNotFound
+        data = request.data if isinstance(request.data, dict) else {}
+        verify_coupon_pin(user=request.user, coupon_id=coupon_id, pin=data.get('pin'))
         raise CouponUseNotImplemented
