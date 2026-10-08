@@ -4,7 +4,7 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from coupons.exceptions import CouponNotFound, InvalidCouponStatus
+from coupons.exceptions import CouponNotFound, CouponUseNotImplemented, InvalidCouponStatus
 from coupons.models import Coupon
 from coupons.pagination import MyCouponPagination
 from coupons.serializers import IssuedCouponSerializer, MyCouponDetailSerializer, MyCouponSerializer
@@ -79,3 +79,19 @@ class MyCouponDetailView(RetrieveAPIView):
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), 'now': timezone.now()}
+
+
+class MyCouponUseView(APIView):
+    """쿠폰 사용: POST /api/v1/me/coupons/{coupon_id}/use/
+
+    요청: {"pin": "0428"} — 점주가 사용자 휴대폰에서 매장 PIN을 입력합니다. CSRF 토큰(X-CSRFToken)이 필요합니다.
+    쿠폰 UUID와 로그인 사용자로 함께 조회하므로 없는 쿠폰과 다른 사람의 쿠폰은 모두 404(COUPON_NOT_FOUND).
+
+    개발 단계: 현재는 로그인·소유자 확인까지만 하고 501을 돌려줍니다.
+    PIN 검증(2단계), 실패 횟수 제한(3단계), 사용 처리와 완료 응답(4단계)은 이후 단계에서 추가합니다.
+    """
+
+    def post(self, request, coupon_id):
+        if not Coupon.objects.filter(pk=coupon_id, user=request.user).exists():
+            raise CouponNotFound
+        raise CouponUseNotImplemented

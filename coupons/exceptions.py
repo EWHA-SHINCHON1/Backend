@@ -49,3 +49,11 @@ class InvalidCouponStatus(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_code = 'INVALID_COUPON_STATUS'
     default_detail = '지원하지 않는 쿠폰 상태입니다. available, used, expired 중 하나를 사용하세요.'
+
+
+class CouponUseNotImplemented(APIException):
+    """쿠폰 사용 API 개발 중 임시 응답. 4단계(사용 처리)에서 제거합니다."""
+
+    status_code = status.HTTP_501_NOT_IMPLEMENTED
+    default_code = 'NOT_IMPLEMENTED'
+    default_detail = '쿠폰 사용 기능은 준비 중입니다.'
