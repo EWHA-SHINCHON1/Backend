@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from coupons import exceptions
 from coupons.models import Coupon, PinAttempt
-from coupons.services import PIN_MAX_FAILURES, verify_coupon_pin
+from coupons.services import PIN_MAX_FAILURES, use_coupon
 from coupons.tests.helpers import logged_in_client, make_promotion, make_store, run_in_thread
 
 User = get_user_model()
@@ -68,8 +68,8 @@ class PinRateLimitTests(TestCase):
         self.assertEqual(response['Retry-After'], str(retry_after))
 
     def assert_passes(self, response):
-        # PIN 통과. 사용 처리는 4단계에서 추가하므로 아직 501
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['coupon']['status'], 'used')
 
     def assert_not_used(self):
         self.coupon.refresh_from_db()
@@ -116,9 +116,11 @@ class PinRateLimitTests(TestCase):
         self.assertEqual((attempt.failure_count, attempt.locked_until), (0, None))
 
     def test_success_resets_failures(self):
+        second = self.issue(self.user, self.store)
         self.fail(3)
         self.assert_passes(self.post(PIN))
-        self.assert_invalid(self.post(WRONG), 4)
+        # 같은 매장의 다른 쿠폰에서 다시 5번의 기회
+        self.assert_invalid(self.post(WRONG, coupon=second), 4)
 
     def test_failures_older_than_window_are_dropped(self):
         self.fail(4)
@@ -196,7 +198,7 @@ class PinRateLimitConcurrencyTests(TransactionTestCase):
         def call(pin):
             def func():
                 barrier.wait(timeout=30)
-                return verify_coupon_pin(user=self.user, coupon_id=self.coupon.pk, pin=pin)
+                return use_coupon(user=self.user, coupon_id=self.coupon.pk, pin=pin)
             return func
 
         threads = [run_in_thread(call(pin), results, i) for i, pin in enumerate(pins)]

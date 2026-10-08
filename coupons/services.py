@@ -60,30 +60,50 @@ def issue_coupon(*, user, promotion_id):
     return coupon, True
 
 
-def verify_coupon_pin(*, user, coupon_id, pin):
-    """본인 쿠폰을 찾고 매장 PIN을 확인한 뒤 쿠폰을 돌려줍니다. 쿠폰은 변경하지 않습니다.
+def use_coupon(*, user, coupon_id, pin):
+    """매장 PIN을 확인하고 본인 쿠폰을 사용 처리한 뒤 쿠폰을 돌려줍니다.
 
+    오류 확인 순서: 쿠폰 없음(404) → PIN 형식 → 이미 사용 → 만료 → 매장 PIN 미설정 → 차단 중 → PIN 불일치.
     - 쿠폰 UUID와 로그인 사용자로 함께 조회합니다. 없는 쿠폰·다른 사람의 쿠폰은 모두 COUPON_NOT_FOUND.
     - pin은 JSON 문자열이어야 하며 공백 제거나 숫자→문자열 변환을 하지 않습니다.
+    - 쿠폰 행을 잠근 뒤 상태를 다시 확인하므로 동시 요청 중 한 번만 사용됩니다.
+      (Promotion·Store 행은 잠그지 않도록 of=('self',)로 쿠폰만 잠급니다.)
+    - 이미 사용했거나 만료된 쿠폰은 PIN을 확인하지 않으므로 실패 횟수에 포함되지 않습니다.
     - PIN 미설정 매장은 check_usage_pin()의 False와 구분하기 위해 has_usage_pin(프로퍼티)으로 먼저 확인합니다.
+    - 비활성 매장(Store.is_active=False)의 쿠폰도 사용할 수 있습니다. (2026-10-08 합의)
+    - PIN 오류는 트랜잭션을 커밋한 뒤에 던지므로 실패 기록이 롤백되지 않습니다.
     - PIN 원문은 저장·로깅하지 않습니다.
     """
-    coupon = (
-        Coupon.objects.select_related('promotion__store')
-        .filter(pk=coupon_id, user=user)
-        .first()
-    )
-    if coupon is None:
-        raise exceptions.CouponNotFound
+    with transaction.atomic():
+        coupon = (
+            Coupon.objects.select_for_update(of=('self',))
+            .select_related('promotion__store')
+            .filter(pk=coupon_id, user=user)
+            .first()
+        )
+        if coupon is None:
+            raise exceptions.CouponNotFound
 
-    if not isinstance(pin, str) or not PIN_PATTERN.fullmatch(pin):
-        raise exceptions.InvalidPinFormat
+        if not isinstance(pin, str) or not PIN_PATTERN.fullmatch(pin):
+            raise exceptions.InvalidPinFormat
 
-    store = coupon.promotion.store
-    if not store.has_usage_pin:
-        raise exceptions.PinNotSet
+        # 잠금을 얻은 뒤의 시각으로 판단합니다.
+        now = timezone.now()
+        status = coupon.get_status(now=now)
+        if status == Coupon.Status.USED:
+            raise exceptions.CouponAlreadyUsed
+        if status == Coupon.Status.EXPIRED:
+            raise exceptions.CouponExpired
 
-    result = check_pin_with_limit(user=user, store=store, pin=pin)
+        store = coupon.promotion.store
+        if not store.has_usage_pin:
+            raise exceptions.PinNotSet
+
+        result = check_pin_with_limit(user=user, store=store, pin=pin)
+        if result.ok:
+            coupon.used_at = now
+            coupon.save(update_fields=['used_at'])
+
     raise_for_pin_result(result)
     return coupon
 
@@ -105,7 +125,7 @@ def check_pin_with_limit(*, user, store, pin):
     - 사용자+매장의 PinAttempt 행을 잠근 채 PIN을 확인하므로, 같은 사용자·매장의 동시 요청은
       한 줄로 처리되어 허용 횟수를 넘겨 시도할 수 없습니다.
     - 이 함수 안에서는 예외를 던지지 않고 결과만 돌려줍니다. 호출한 쪽이 트랜잭션을 마친 뒤
-      raise_for_pin_result()로 오류를 내야 실패 기록이 롤백되지 않습니다.
+      raise_for_pin_result()로 오류를 내야 실패 기록이 롤백되지 않습니다. (use_coupon 참고)
     - 차단 중에는 PIN을 확인하지 않습니다. (맞는 PIN이어도 차단)
     """
     with transaction.atomic():

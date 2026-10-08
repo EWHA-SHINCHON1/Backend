@@ -92,9 +92,13 @@ class PinLocked(APIException):
         self.details = {'retry_after_seconds': retry_after_seconds}
 
 
-class CouponUseNotImplemented(APIException):
-    """쿠폰 사용 API 개발 중 임시 응답. 4단계(사용 처리)에서 제거합니다."""
+class CouponAlreadyUsed(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = 'COUPON_ALREADY_USED'
+    default_detail = '이미 사용한 쿠폰입니다.'
 
-    status_code = status.HTTP_501_NOT_IMPLEMENTED
-    default_code = 'NOT_IMPLEMENTED'
-    default_detail = '쿠폰 사용 기능은 준비 중입니다.'
+
+class CouponExpired(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = 'COUPON_EXPIRED'
+    default_detail = '사용 기한이 지난 쿠폰입니다.'

@@ -61,10 +61,10 @@ class CouponUseBaseTests(CouponUseTestMixin, TestCase):
         client, token = csrf_client(self.user)
         response = client.post(use_url(self.coupon.pk), {'pin': '0428'}, format='json')
         self.assert_error(response, 403, 'CSRF_FAILED')
+        self.assert_not_used()
 
         response = client.post(use_url(self.coupon.pk), {'pin': '0428'}, format='json', HTTP_X_CSRFTOKEN=token)
-        self.assertNotEqual(response.status_code, 403)
-        self.assert_not_used()
+        self.assertEqual(response.status_code, 200)
 
     def test_get_is_not_allowed(self):
         self.assertEqual(self.client.get(use_url(self.coupon.pk)).status_code, 405)
@@ -82,15 +82,14 @@ class CouponUseBaseTests(CouponUseTestMixin, TestCase):
     def test_non_uuid_path_is_not_routed(self):
         self.assertEqual(self.client.post('/api/v1/me/coupons/123/use/', {}, format='json').status_code, 404)
 
-    # 1단계 임시 응답: 본인 쿠폰이어도 아직 사용 처리하지 않음
-
-    def test_own_coupon_returns_not_implemented_and_is_not_used(self):
-        self.assert_error(self.post(), 501, 'NOT_IMPLEMENTED')
-        self.assert_not_used()
+    def test_own_coupon_with_correct_pin_is_used(self):
+        self.assertEqual(self.post().status_code, 200)
+        self.coupon.refresh_from_db()
+        self.assertIsNotNone(self.coupon.used_at)
 
 
 class CouponUsePinTests(CouponUseTestMixin, TestCase):
-    """2단계: PIN 형식 검증과 매장 PIN 연동. PIN이 맞아도 아직 사용 처리하지 않습니다(4단계)."""
+    """2단계: PIN 형식 검증과 매장 PIN 연동."""
 
     def assert_pin_rejected(self, data, code='INVALID_PIN_FORMAT', status_code=400):
         response = self.post(data=data)
@@ -100,9 +99,8 @@ class CouponUsePinTests(CouponUseTestMixin, TestCase):
 
     # 형식: JSON 문자열 4자리 ASCII 숫자만 허용
 
-    def test_valid_pin_passes_and_coupon_is_not_used_yet(self):
-        self.assert_error(self.post(data={'pin': '0428'}), 501, 'NOT_IMPLEMENTED')
-        self.assert_not_used()
+    def test_valid_pin_passes(self):
+        self.assertEqual(self.post(data={'pin': '0428'}).status_code, 200)
 
     def test_pin_missing(self):
         self.assert_pin_rejected({})
@@ -149,10 +147,10 @@ class CouponUsePinTests(CouponUseTestMixin, TestCase):
         self.assert_not_used()
 
     def test_form_encoded_body_is_also_validated(self):
-        response = self.client.post(use_url(self.coupon.pk), {'pin': '0428'})
-        self.assert_error(response, 501, 'NOT_IMPLEMENTED')
         response = self.client.post(use_url(self.coupon.pk), {'pin': '42'})
         self.assert_error(response, 400, 'INVALID_PIN_FORMAT')
+        response = self.client.post(use_url(self.coupon.pk), {'pin': '0428'})
+        self.assertEqual(response.status_code, 200)
 
     # 매장 PIN 연동
 
@@ -175,8 +173,7 @@ class CouponUsePinTests(CouponUseTestMixin, TestCase):
         self.store.set_usage_pin('5555')
         self.store.save()
         self.assert_pin_rejected({'pin': '0428'}, 'INVALID_PIN')
-        self.assert_error(self.post(data={'pin': '5555'}), 501, 'NOT_IMPLEMENTED')
-        self.assert_not_used()
+        self.assertEqual(self.post(data={'pin': '5555'}).status_code, 200)
 
     # 오류 우선순위
 
