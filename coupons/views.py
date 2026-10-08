@@ -8,7 +8,7 @@ from coupons.exceptions import CouponNotFound, InvalidCouponStatus
 from coupons.models import Coupon
 from coupons.pagination import MyCouponPagination
 from coupons.serializers import IssuedCouponSerializer, MyCouponDetailSerializer, MyCouponSerializer
-from coupons.services import issue_coupon
+from coupons.services import issue_coupon, use_coupon
 
 
 class PromotionCouponIssueView(APIView):
@@ -79,3 +79,22 @@ class MyCouponDetailView(RetrieveAPIView):
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), 'now': timezone.now()}
+
+
+class MyCouponUseView(APIView):
+    """쿠폰 사용: POST /api/v1/me/coupons/{coupon_id}/use/
+
+    요청: {"pin": "0428"} — 점주가 사용자 휴대폰에서 매장 PIN을 입력합니다. CSRF 토큰(X-CSRFToken)이 필요합니다.
+    성공: 200 {"coupon": 내 쿠폰 목록 항목과 같은 구조(status=used, used_at 포함)}
+
+    오류 확인 순서: 쿠폰 없음(404 COUPON_NOT_FOUND) → PIN 형식(400 INVALID_PIN_FORMAT)
+    → 이미 사용(409 COUPON_ALREADY_USED) → 만료(409 COUPON_EXPIRED) → 매장 PIN 미설정(409 PIN_NOT_SET)
+    → 차단 중(429 PIN_LOCKED) → PIN 불일치(400 INVALID_PIN, details.remaining_attempts).
+    사용자+매장 기준 10분 안에 5번 틀리면 10분간 차단합니다(429, details.retry_after_seconds, Retry-After 헤더).
+    """
+
+    def post(self, request, coupon_id):
+        data = request.data if isinstance(request.data, dict) else {}
+        coupon = use_coupon(user=request.user, coupon_id=coupon_id, pin=data.get('pin'))
+        serializer = MyCouponSerializer(coupon, context={'now': timezone.now()})
+        return Response({'coupon': serializer.data})

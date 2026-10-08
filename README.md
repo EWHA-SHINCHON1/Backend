@@ -302,7 +302,7 @@ Base URL: `/api/v1/`
 | 401 | `AUTHENTICATION_REQUIRED` | 로그인이 필요한 API를 비로그인으로 호출 |
 | 403 | `CSRF_FAILED` | 쓰기 요청에 `X-CSRFToken` 헤더가 없거나 틀림 |
 | 403 | `PERMISSION_DENIED` | 로그인했지만 권한 없음 |
-| 400 | `VALIDATION_ERROR` | 입력값 오류. 필드별 내용은 `error.details`에 담김 |
+| 400 | `VALIDATION_ERROR` | 입력값 오류. 필드별 내용은 `error.details`에 담김 (그 밖에 `details`를 쓰는 오류는 각 API 문서 참고) |
 | 400 | `BAD_REQUEST` | JSON 형식 오류 등 |
 | 404 | `NOT_FOUND` | 대상 없음 |
 | 405 | `METHOD_NOT_ALLOWED` | 허용되지 않은 요청 방식 |
@@ -396,3 +396,96 @@ KAKAO_REDIRECT_URI=https://api.godgoowm.com/api/v1/auth/kakao/callback/
 ```
 
 (도메인은 예시입니다)
+
+## 쿠폰
+
+모든 쿠폰 API는 **로그인이 필요**합니다. 사용자는 요청 본문이 아니라 세션의 로그인 사용자로 정합니다. POST에는 `X-CSRFToken` 헤더가 필요합니다.
+
+### API
+
+Base URL: `/api/v1/`
+
+| Method | 경로 | 설명 | 상태 |
+| --- | --- | --- | --- |
+| POST | `promotions/{promotion_id}/coupons/` | 쿠폰 발급 | 구현 |
+| GET | `me/coupons/` | 내 쿠폰 목록 | 구현 |
+| GET | `me/coupons/{coupon_id}/` | 내 쿠폰 상세 | 구현 |
+| POST | `me/coupons/{coupon_id}/use/` | 쿠폰 사용 (매장 PIN) | 구현 |
+
+**쿠폰 상태** (`status`, 저장하지 않고 계산)
+
+| 값 | 기준 |
+| --- | --- |
+| `used` | `used_at`이 있음 (만료보다 우선) |
+| `expired` | 미사용이고 현재 시각 ≥ `expires_at` |
+| `available` | 그 외 |
+
+### `POST /api/v1/promotions/{promotion_id}/coupons/`
+
+- 본문: `{}`. 처음 받으면 `201` `{"created": true, "coupon": {...}}`, 이미 받았으면 `200` `{"created": false, "coupon": {기존 쿠폰}}`
+- `coupon`: `id`(UUID), `status`, `issued_at`, `expires_at`(발급 시 프로모션의 `redeem_until`을 복사)
+- 이미 받은 쿠폰은 사용·만료·프로모션 종료·비공개·품절이어도 재발급하지 않고 기존 쿠폰을 돌려줍니다.
+
+| HTTP | code | 상황 |
+| --- | --- | --- |
+| 404 | `PROMOTION_NOT_FOUND` | 없거나 비공개인 프로모션 |
+| 400 | `PROMOTION_COUPON_NOT_REQUIRED` | 쿠폰 없이 참여하는 프로모션 |
+| 409 | `PROMOTION_NOT_ACTIVE` | 발급 시작 전 |
+| 409 | `PROMOTION_ENDED` | 발급 기간 종료 |
+| 409 | `COUPON_SOLD_OUT` | 발급 수량 소진 (사용·만료된 쿠폰도 수량에 포함) |
+
+### `GET /api/v1/me/coupons/`
+
+- `?status=available|used|expired` (생략하면 전체, 그 외 값은 `400 INVALID_COUPON_STATUS`), `?page=N` (페이지당 20개)
+- 최근 발급순. 종료·비공개 프로모션의 쿠폰도 포함합니다.
+- 응답: `{"count", "next", "previous", "results": [{"id", "status", "issued_at", "expires_at", "used_at", "promotion": {"id", "title", "benefit", "image_url", "store": {"id", "name"}}}]}`
+
+### `GET /api/v1/me/coupons/{coupon_id}/`
+
+- 목록 항목에 `promotion.terms`와 `store.address`, `store.business_hours`, `store.map_url`이 추가됩니다.
+- 없는 쿠폰과 다른 사람의 쿠폰은 모두 `404 COUPON_NOT_FOUND`입니다.
+
+### `POST /api/v1/me/coupons/{coupon_id}/use/`
+
+점주가 손님 휴대폰에서 **매장 PIN**(4자리)을 입력해 쿠폰을 사용 처리합니다. 매장 PIN은 Django Admin의 매장 화면에서 등록합니다.
+
+```json
+// 요청
+{"pin": "0428"}
+
+// 200: 사용 완료 (내 쿠폰 목록 항목과 같은 구조)
+{"coupon": {"id": "…", "status": "used", "issued_at": "…", "expires_at": "…", "used_at": "…",
+            "promotion": {"id": 1, "title": "…", "benefit": "…", "image_url": "…", "store": {"id": 1, "name": "…"}}}}
+```
+
+- `pin`은 **JSON 문자열, ASCII 숫자 4자리**만 허용합니다. 정수(`428`)를 문자열로 바꾸거나 공백을 지워 주지 않습니다.
+- 쿠폰 행을 잠근 뒤 상태를 다시 확인하므로, 동시에 여러 번 요청해도 **한 번만** 사용됩니다.
+- 프로모션이 종료·비공개이거나 매장이 비활성(`is_active=False`)이어도 `expires_at` 전이면 사용할 수 있습니다.
+
+**오류** (위에서부터 먼저 확인)
+
+| HTTP | code | 상황 |
+| --- | --- | --- |
+| 404 | `COUPON_NOT_FOUND` | 없는 쿠폰 또는 다른 사람의 쿠폰 |
+| 400 | `INVALID_PIN_FORMAT` | `pin`이 4자리 숫자 문자열이 아님 (누락 포함) |
+| 409 | `COUPON_ALREADY_USED` | 이미 사용한 쿠폰 |
+| 409 | `COUPON_EXPIRED` | 사용 기한(`expires_at`)이 지남 |
+| 409 | `PIN_NOT_SET` | 매장에 PIN이 등록되지 않음 |
+| 429 | `PIN_LOCKED` | PIN을 여러 번 틀려 일시 차단됨. `details.retry_after_seconds`, `Retry-After` 헤더 |
+| 400 | `INVALID_PIN` | PIN 불일치. `details.remaining_attempts`(차단까지 남은 횟수) |
+
+```json
+{"error": {"code": "INVALID_PIN", "message": "PIN이 올바르지 않습니다. 남은 시도 2회", "details": {"remaining_attempts": 2}}}
+{"error": {"code": "PIN_LOCKED", "message": "PIN을 여러 번 잘못 입력했습니다. 10분 후 다시 시도해 주세요.", "details": {"retry_after_seconds": 600}}}
+```
+
+**PIN 실패 횟수 제한**
+
+| 항목 | 값 |
+| --- | --- |
+| 집계 단위 | 사용자 + 매장 (같은 매장의 쿠폰끼리 횟수를 공유) |
+| 허용 | 첫 실패부터 10분 안에 5번 틀리면 10분 차단 |
+| 세는 오류 | `INVALID_PIN`만. 형식 오류·PIN 미설정·이미 사용·만료는 세지 않음 |
+| 차단 중 | 맞는 PIN이어도 거절 (PIN을 확인하지 않음) |
+| 성공 시 | 실패 횟수 초기화 |
+| 저장 | DB 테이블 `coupon_pin_attempts` (서버 프로세스 간 공유, 실패해도 기록 유지) |
