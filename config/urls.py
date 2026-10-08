@@ -12,6 +12,8 @@ from config.health import health
 
 api_v1_patterns = [
     path('auth/', include('users.urls')),
+    path('promotions/', include('promotions.urls')),
+    path('stores/', include('stores.urls')),
     path('', include('coupons.urls')),
 ]
 
