@@ -88,10 +88,11 @@ class MyCouponUseView(APIView):
     쿠폰 UUID와 로그인 사용자로 함께 조회하므로 없는 쿠폰과 다른 사람의 쿠폰은 모두 404(COUPON_NOT_FOUND).
 
     오류 확인 순서: 쿠폰 없음(404) → PIN 형식(400 INVALID_PIN_FORMAT) → 매장 PIN 미설정(409 PIN_NOT_SET)
-    → PIN 불일치(400 INVALID_PIN).
+    → 차단 중(429 PIN_LOCKED) → PIN 불일치(400 INVALID_PIN, details.remaining_attempts).
+    사용자+매장 기준 10분 안에 5번 틀리면 10분간 차단합니다(429, details.retry_after_seconds, Retry-After 헤더).
 
     개발 단계: 현재는 PIN 확인까지만 하고, PIN이 맞아도 쿠폰을 바꾸지 않고 501을 돌려줍니다.
-    실패 횟수 제한(3단계), 사용 처리와 완료 응답(4단계)은 이후 단계에서 추가합니다.
+    사용 처리와 완료 응답(4단계)은 이후 단계에서 추가합니다.
     """
 
     def post(self, request, coupon_id):

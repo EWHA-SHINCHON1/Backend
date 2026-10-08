@@ -201,4 +201,5 @@ class CouponUsePinTests(CouponUseTestMixin, TestCase):
         body = response.content.decode()
         self.assertNotIn(self.store.usage_pin_hash, body)
         self.assertNotIn('1234', body)
-        self.assertEqual(set(response.json()['error']), {'code', 'message'})
+        self.assertEqual(set(response.json()['error']), {'code', 'message', 'details'})
+        self.assertEqual(set(response.json()['error']['details']), {'remaining_attempts'})

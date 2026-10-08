@@ -5,6 +5,8 @@
 응답 형식: {"error": {"code": default_code 대문자, "message": default_detail}}
 """
 
+import math
+
 from rest_framework import status
 from rest_framework.exceptions import APIException
 
@@ -64,9 +66,30 @@ class PinNotSet(APIException):
 
 
 class InvalidPin(APIException):
+    """details.remaining_attempts: 차단 전까지 남은 시도 횟수"""
+
     status_code = status.HTTP_400_BAD_REQUEST
     default_code = 'INVALID_PIN'
     default_detail = 'PIN이 올바르지 않습니다.'
+
+    def __init__(self, remaining_attempts):
+        super().__init__(f'{self.default_detail} 남은 시도 {remaining_attempts}회')
+        self.details = {'remaining_attempts': remaining_attempts}
+
+
+class PinLocked(APIException):
+    """details.retry_after_seconds: 다시 시도할 수 있을 때까지 남은 초. Retry-After 헤더도 함께 내려갑니다."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    default_code = 'PIN_LOCKED'
+    default_detail = 'PIN을 여러 번 잘못 입력해 잠시 사용할 수 없습니다.'
+
+    def __init__(self, retry_after_seconds):
+        minutes = max(1, math.ceil(retry_after_seconds / 60))
+        super().__init__(f'PIN을 여러 번 잘못 입력했습니다. {minutes}분 후 다시 시도해 주세요.')
+        # DRF 기본 예외 처리가 wait 값으로 Retry-After 헤더를 붙입니다.
+        self.wait = retry_after_seconds
+        self.details = {'retry_after_seconds': retry_after_seconds}
 
 
 class CouponUseNotImplemented(APIException):
