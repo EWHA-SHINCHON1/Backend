@@ -237,7 +237,7 @@ class StoreAdminForm(forms.ModelForm):
 
 class StoreMenuInline(admin.TabularInline):
     model = StoreMenu
-    fields = ('name', 'price', 'sort_order')
+    fields = ('name', 'description', 'price', 'image_url', 'sort_order')
     extra = 1
     ordering = ('sort_order', 'id')
 
@@ -268,7 +268,10 @@ class StoreAdmin(admin.ModelAdmin):
                     'address',
                     'business_hours',
                     'image_url',
+                    'story_title',
                     'story',
+                    'story_image_url',
+                    'story_after_image',
                     'map_url',
                     'instagram_url',
                     'naver_url',
@@ -327,6 +330,7 @@ class StoreAdmin(admin.ModelAdmin):
 @admin.register(StoreMenu)
 class StoreMenuAdmin(admin.ModelAdmin):
     list_display = ('id', 'store', 'name', 'price', 'sort_order')
+    fields = ('store', 'name', 'description', 'price', 'image_url', 'sort_order')
     search_fields = ('name', 'store__name')
     list_filter = ('store',)
     list_select_related = ('store',)

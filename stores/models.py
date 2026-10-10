@@ -18,7 +18,15 @@ class Store(models.Model):
     address = models.CharField('주소', max_length=255)
     business_hours = models.TextField('영업시간·휴무 안내', blank=True, default='')
     image_url = models.URLField('대표 이미지 URL', max_length=500, blank=True, default='')
+    story_title = models.CharField('가게 이야기 제목', max_length=200, blank=True, default='')
     story = models.TextField('매장 소개', blank=True, default='')
+    story_image_url = models.URLField(
+        '가게 이야기 이미지 URL',
+        max_length=500,
+        blank=True,
+        default='',
+    )
+    story_after_image = models.TextField('이미지 이후 이야기', blank=True, default='')
     # Liner 초안 입력용 내부 인터뷰·운영 메모. story와 달리 공개하지 않습니다.
     promotion_context = models.TextField('내부 운영 메모', blank=True, default='')
     map_url = models.URLField('지도 링크', max_length=500, blank=True, default='')
@@ -68,8 +76,10 @@ class StoreMenu(models.Model):
         verbose_name='매장',
     )
     name = models.CharField('메뉴명', max_length=100)
+    description = models.TextField('메뉴 설명', blank=True, default='')
     # 원 단위 정수. PositiveIntegerField라 DB에 0 이상 CHECK 제약이 생깁니다.
     price = models.PositiveIntegerField('가격(원)')
+    image_url = models.URLField('메뉴 이미지 URL', max_length=500, blank=True, default='')
     sort_order = models.PositiveIntegerField('표시 순서', default=0)
 
     class Meta:

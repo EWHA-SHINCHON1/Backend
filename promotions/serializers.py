@@ -19,7 +19,7 @@ class PromotionStoreSummarySerializer(serializers.ModelSerializer):
 class PromotionStoreMenuSerializer(serializers.ModelSerializer):
     class Meta:
         model = StoreMenu
-        fields = ('name', 'price', 'sort_order')
+        fields = ('name', 'description', 'price', 'image_url', 'sort_order')
 
 
 class PromotionStoreDetailSerializer(serializers.ModelSerializer):
@@ -28,7 +28,22 @@ class PromotionStoreDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Store
-        fields = ('id', 'name', 'category', 'address', 'business_hours', 'story', 'menus')
+        fields = (
+            'id',
+            'name',
+            'category',
+            'address',
+            'business_hours',
+            'image_url',
+            'map_url',
+            'instagram_url',
+            'naver_url',
+            'story_title',
+            'story',
+            'story_image_url',
+            'story_after_image',
+            'menus',
+        )
 
     def get_category(self, store):
         return store.category.lower()

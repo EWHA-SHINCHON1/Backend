@@ -22,7 +22,14 @@ class PromotionPublicAPITestBase(TestCase):
             category=Store.Category.BAKERY_CAFE,
             address='이대 인근',
             business_hours='10:00-20:00',
+            image_url='https://example.com/store.jpg',
+            story_title='가게 이야기 제목',
             story='매장 이야기',
+            story_image_url='https://example.com/story.jpg',
+            story_after_image='이미지 다음 이야기',
+            map_url='https://example.com/map',
+            instagram_url='https://instagram.com/example',
+            naver_url='https://example.com/naver',
         )
 
     def make_promotion(self, **kwargs):
@@ -298,8 +305,22 @@ class PromotionPublicDetailAPITests(PromotionPublicAPITestBase):
 
     def test_anonymous_detail_includes_terms_store_and_ordered_menus(self):
         promotion = self.make_promotion()
-        StoreMenu.objects.create(store=self.store, name='두 번째', price=4000, sort_order=2)
-        StoreMenu.objects.create(store=self.store, name='첫 번째', price=3500, sort_order=1)
+        StoreMenu.objects.create(
+            store=self.store,
+            name='두 번째',
+            description='두 번째 설명',
+            price=4000,
+            image_url='https://example.com/menu-2.jpg',
+            sort_order=2,
+        )
+        StoreMenu.objects.create(
+            store=self.store,
+            name='첫 번째',
+            description='첫 번째 설명',
+            price=3500,
+            image_url='https://example.com/menu-1.jpg',
+            sort_order=1,
+        )
 
         response = self.client.get(self.url(promotion.id))
 
@@ -308,7 +329,35 @@ class PromotionPublicDetailAPITests(PromotionPublicAPITestBase):
         self.assertEqual(body['terms'], '한 사람당 한 번')
         self.assertIsNone(body['my_coupon_id'])
         self.assertEqual(body['store']['category'], 'bakery_cafe')
+        self.assertEqual(body['store']['image_url'], 'https://example.com/store.jpg')
+        self.assertEqual(body['store']['map_url'], 'https://example.com/map')
+        self.assertEqual(body['store']['instagram_url'], 'https://instagram.com/example')
+        self.assertEqual(body['store']['naver_url'], 'https://example.com/naver')
+        self.assertEqual(body['store']['story_title'], '가게 이야기 제목')
+        self.assertEqual(body['store']['story'], '매장 이야기')
+        self.assertEqual(body['store']['story_image_url'], 'https://example.com/story.jpg')
+        self.assertEqual(body['store']['story_after_image'], '이미지 다음 이야기')
         self.assertEqual([menu['name'] for menu in body['store']['menus']], ['첫 번째', '두 번째'])
+        self.assertEqual(body['store']['menus'][0]['description'], '첫 번째 설명')
+        self.assertEqual(body['store']['menus'][0]['image_url'], 'https://example.com/menu-1.jpg')
+
+    def test_detail_query_count_does_not_grow_with_nested_menus(self):
+        promotion = self.make_promotion()
+        for index in range(10):
+            StoreMenu.objects.create(
+                store=self.store,
+                name=f'메뉴 {index}',
+                description=f'설명 {index}',
+                price=1000 + index,
+                image_url=f'https://example.com/menu-{index}.jpg',
+                sort_order=index,
+            )
+
+        with self.assertNumQueries(2):
+            response = self.client.get(self.url(promotion.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()['store']['menus']), 10)
 
     def test_unpublished_inactive_store_and_unknown_are_not_found(self):
         unpublished = self.make_promotion(is_published=False)

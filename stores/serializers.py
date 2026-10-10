@@ -6,7 +6,7 @@ from .models import Store, StoreMenu
 class StoreMenuPublicSerializer(serializers.ModelSerializer):
     class Meta:
         model = StoreMenu
-        fields = ('name', 'price', 'sort_order')
+        fields = ('name', 'description', 'price', 'image_url', 'sort_order')
 
 
 class StorePublicDetailSerializer(serializers.ModelSerializer):
@@ -22,7 +22,10 @@ class StorePublicDetailSerializer(serializers.ModelSerializer):
             'address',
             'business_hours',
             'image_url',
+            'story_title',
             'story',
+            'story_image_url',
+            'story_after_image',
             'map_url',
             'instagram_url',
             'naver_url',

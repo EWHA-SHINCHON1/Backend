@@ -13,7 +13,10 @@ class StorePublicDetailAPITests(TestCase):
             address='이대 인근',
             business_hours='매일 10:00-20:00',
             image_url='https://example.com/store.jpg',
+            story_title='익숙한 재료의 새로운 맛',
             story='매장 이야기',
+            story_image_url='https://example.com/story.jpg',
+            story_after_image='사진 뒤에 이어지는 이야기',
             promotion_context='내부 운영 메모',
             map_url='https://example.com/map',
             instagram_url='https://instagram.com/example',
@@ -21,8 +24,22 @@ class StorePublicDetailAPITests(TestCase):
         )
         self.store.set_usage_pin('0428')
         self.store.save()
-        StoreMenu.objects.create(store=self.store, name='두 번째', price=4000, sort_order=2)
-        StoreMenu.objects.create(store=self.store, name='첫 번째', price=3500, sort_order=1)
+        StoreMenu.objects.create(
+            store=self.store,
+            name='두 번째',
+            description='두 번째 메뉴 설명',
+            price=4000,
+            image_url='https://example.com/menu-2.jpg',
+            sort_order=2,
+        )
+        StoreMenu.objects.create(
+            store=self.store,
+            name='첫 번째',
+            description='첫 번째 메뉴 설명',
+            price=3500,
+            image_url='https://example.com/menu-1.jpg',
+            sort_order=1,
+        )
 
     def url(self, store_id=None):
         return f'/api/v1/stores/{store_id or self.store.id}/'
@@ -35,17 +52,50 @@ class StorePublicDetailAPITests(TestCase):
             set(response.json()),
             {
                 'id', 'name', 'category', 'address', 'business_hours', 'image_url',
-                'story', 'map_url', 'instagram_url', 'naver_url', 'menus',
+                'story_title', 'story', 'story_image_url', 'story_after_image',
+                'map_url', 'instagram_url', 'naver_url', 'menus',
             },
         )
         self.assertEqual(response.json()['category'], 'bakery_cafe')
+        self.assertEqual(response.json()['story_title'], '익숙한 재료의 새로운 맛')
+        self.assertEqual(response.json()['story_image_url'], 'https://example.com/story.jpg')
+        self.assertEqual(response.json()['story_after_image'], '사진 뒤에 이어지는 이야기')
         self.assertEqual(
             response.json()['menus'],
             [
-                {'name': '첫 번째', 'price': 3500, 'sort_order': 1},
-                {'name': '두 번째', 'price': 4000, 'sort_order': 2},
+                {
+                    'name': '첫 번째',
+                    'description': '첫 번째 메뉴 설명',
+                    'price': 3500,
+                    'image_url': 'https://example.com/menu-1.jpg',
+                    'sort_order': 1,
+                },
+                {
+                    'name': '두 번째',
+                    'description': '두 번째 메뉴 설명',
+                    'price': 4000,
+                    'image_url': 'https://example.com/menu-2.jpg',
+                    'sort_order': 2,
+                },
             ],
         )
+
+    def test_empty_story_and_menu_content_are_returned_as_empty_strings(self):
+        store = Store.objects.create(
+            name='빈 콘텐츠 매장',
+            category=Store.Category.RESTAURANT,
+            address='신촌',
+        )
+        StoreMenu.objects.create(store=store, name='기본 메뉴', price=1000)
+
+        body = self.client.get(self.url(store.id)).json()
+
+        self.assertEqual(body['story_title'], '')
+        self.assertEqual(body['story'], '')
+        self.assertEqual(body['story_image_url'], '')
+        self.assertEqual(body['story_after_image'], '')
+        self.assertEqual(body['menus'][0]['description'], '')
+        self.assertEqual(body['menus'][0]['image_url'], '')
 
     def test_internal_fields_and_promotions_are_not_exposed(self):
         body = self.client.get(self.url()).json()
