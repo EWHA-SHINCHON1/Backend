@@ -35,7 +35,7 @@ env = environ.Env(
     KAKAO_CLIENT_SECRET=(str, ''),
     KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
     KAKAO_REDIRECT_URI=(str, ''),
-    FRONTEND_BASE_URL=(str, 'http://localhost:5173'),
+    FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
@@ -59,9 +59,7 @@ if IS_PRODUCTION:
 
     SECURE_SSL_REDIRECT = True
     SECURE_REDIRECT_EXEMPT = [r"^health/$"]
-
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
+    # 세션·CSRF 쿠키 Secure는 아래 'Session / CSRF cookies'에서 IS_PRODUCTION이면 True로 설정합니다.
 
 # Django 기본 보안 설정
 SECRET_KEY = env('SECRET_KEY')
@@ -236,6 +234,19 @@ CSRF_COOKIE_SECURE = IS_PRODUCTION or env('CSRF_COOKIE_SECURE')
 CSRF_COOKIE_DOMAIN = env('CSRF_COOKIE_DOMAIN') or None
 
 
+# Cache
+# https://docs.djangoproject.com/en/5.2/topics/cache/#database-caching
+# API 요청 횟수 제한(throttle) 기록을 서버 프로세스 간에 공유하기 위해 DB 캐시를 씁니다.
+# 테이블 생성: python manage.py createcachetable (Railway는 pre-deploy에서 실행)
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'django_cache',
+    }
+}
+
+
 # Django REST framework
 # https://www.django-rest-framework.org/api-guide/settings/
 
@@ -249,6 +260,11 @@ REST_FRAMEWORK = {
     ],
     # 오류 응답 형식: {"error": {"code": ..., "message": ...}}
     'EXCEPTION_HANDLER': 'config.exceptions.custom_exception_handler',
+    # 요청 횟수 제한은 전역으로 걸지 않고, 필요한 뷰에만 throttle 클래스를 지정합니다.
+    # 초과 시 429 TOO_MANY_REQUESTS + Retry-After 헤더
+    'DEFAULT_THROTTLE_RATES': {
+        'coupon_issue': '10/min',  # 쿠폰 발급: 로그인 사용자별 분당 10회
+    },
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S%z',
     'DATE_FORMAT': '%Y-%m-%d',
     'TIME_FORMAT': '%H:%M:%S',
