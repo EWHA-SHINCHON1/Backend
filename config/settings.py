@@ -35,7 +35,7 @@ env = environ.Env(
     KAKAO_CLIENT_SECRET=(str, ''),
     KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
     KAKAO_REDIRECT_URI=(str, ''),
-    FRONTEND_BASE_URL=(str, 'http://localhost:5173'),
+    FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
@@ -59,9 +59,7 @@ if IS_PRODUCTION:
 
     SECURE_SSL_REDIRECT = True
     SECURE_REDIRECT_EXEMPT = [r"^health/$"]
-
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
+    # 세션·CSRF 쿠키 Secure는 아래 'Session / CSRF cookies'에서 IS_PRODUCTION이면 True로 설정합니다.
 
 # Django 기본 보안 설정
 SECRET_KEY = env('SECRET_KEY')
