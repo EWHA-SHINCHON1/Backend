@@ -36,6 +36,8 @@ env = environ.Env(
     KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
     KAKAO_REDIRECT_URI=(str, ''),
     FRONTEND_BASE_URL=(str, 'http://localhost:3000'),
+    LINER_API_KEY=(str, ''),
+    LINER_MODEL=(str, 'liner-mark-1.3'),
     DB_HOST=(str, 'localhost'),
     DB_PORT=(int, 5432),
 )
@@ -284,3 +286,8 @@ KAKAO_CLIENT_SECRET_ENABLED = env('KAKAO_CLIENT_SECRET_ENABLED')
 KAKAO_REDIRECT_URI = env('KAKAO_REDIRECT_URI')
 # 로그인 후 돌아갈 프론트엔드 주소 (끝에 / 없이)
 FRONTEND_BASE_URL = env('FRONTEND_BASE_URL').rstrip('/')
+
+# Liner Model API (Django Admin 프로모션 문구 초안 생성 전용)
+# 키가 없어도 서버는 실행되며, 관리자가 초안 생성을 요청할 때만 안전하게 실패합니다.
+LINER_API_KEY = env('LINER_API_KEY')
+LINER_MODEL = env('LINER_MODEL')

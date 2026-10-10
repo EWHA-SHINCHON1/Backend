@@ -1,0 +1,30 @@
+{% extends "admin/change_form.html" %}
+
+{% block after_field_sets %}
+  {{ block.super }}
+  <fieldset class="module aligned" id="liner-draft-panel"
+            data-endpoint="{{ liner_draft_url }}"
+            data-object-id="{{ liner_draft_object_id }}">
+    <h2>AI 문구 초안 생성</h2>
+    <div class="form-row">
+      <div>
+        {% if liner_draft_disabled %}
+          <p class="help">쿠폰 발급 이력이 있어 제목·소개를 변경할 수 없으므로 초안 생성을 사용할 수 없습니다.</p>
+        {% else %}
+          <p class="help">현재 폼의 매장·혜택·조건·기간을 Liner API로 전송합니다. 생성 결과는 자동 저장되거나 공개되지 않습니다.</p>
+          <button type="button" class="button" id="liner-generate-draft">AI 문구 초안 생성</button>
+        {% endif %}
+        <p id="liner-draft-error" class="errornote" hidden></p>
+      </div>
+    </div>
+    <div id="liner-draft-preview" class="form-row" hidden>
+      <div>
+        <p><strong>AI가 생성한 제목:</strong></p>
+        <p id="liner-draft-title"></p>
+        <p><strong>AI가 생성한 소개:</strong></p>
+        <p id="liner-draft-description"></p>
+        <button type="button" class="button" id="liner-apply-draft">폼에 적용</button>
+      </div>
+    </div>
+  </fieldset>
+{% endblock %}
