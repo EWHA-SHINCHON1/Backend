@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from stores.models import Store, StoreMenu
 
-from .models import Promotion
+from .models import Promotion, PromotionEvent
 
 
 class PromotionStoreSummarySerializer(serializers.ModelSerializer):
@@ -88,3 +88,35 @@ class PromotionPublicDetailSerializer(PromotionPublicListSerializer):
             return None
         coupon_id = getattr(promotion, 'api_my_coupon_id', None)
         return str(coupon_id) if coupon_id is not None else None
+
+
+class PromotionEventInputSerializer(serializers.Serializer):
+    event_id = serializers.UUIDField()
+    event_type = serializers.ChoiceField(choices=('view', 'channel_click'))
+    channel = serializers.CharField(required=False, allow_blank=True, default='', max_length=20)
+
+    def validate(self, attrs):
+        event_type = attrs['event_type']
+        channel = attrs['channel']
+        if event_type == 'view' and channel:
+            raise serializers.ValidationError({'channel': ['view 이벤트에는 channel을 지정할 수 없습니다.']})
+        if event_type == 'channel_click' and channel not in {
+            PromotionEvent.Channel.INSTAGRAM,
+            PromotionEvent.Channel.NAVER,
+        }:
+            raise serializers.ValidationError(
+                {'channel': ['channel_click 이벤트에는 instagram 또는 naver가 필요합니다.']}
+            )
+        return attrs
+
+
+class PromotionEventSerializer(serializers.ModelSerializer):
+    event_id = serializers.UUIDField(source='id', read_only=True)
+    event_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PromotionEvent
+        fields = ('event_id', 'event_type', 'channel', 'created_at')
+
+    def get_event_type(self, event):
+        return event.event_type.lower()

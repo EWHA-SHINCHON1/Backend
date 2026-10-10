@@ -1,16 +1,31 @@
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.db.models import Case, Count, F, OuterRef, Q, Subquery, Value, When
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework import status
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from coupons.models import Coupon
 from stores.models import Store
 
-from .models import Promotion
-from .serializers import PromotionPublicDetailSerializer, PromotionPublicListSerializer
+from .models import Promotion, PromotionEvent
+from .serializers import (
+    PromotionEventInputSerializer,
+    PromotionEventSerializer,
+    PromotionPublicDetailSerializer,
+    PromotionPublicListSerializer,
+)
+from .throttles import PromotionEventIPThrottle
+
+
+class PromotionEventConflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = 'EVENT_ID_CONFLICT'
+    default_detail = '이미 다른 이벤트에 사용된 event_id입니다.'
 
 
 class PromotionPublicPagination(PageNumberPagination):
@@ -148,4 +163,58 @@ class PromotionPublicDetailView(PromotionPublicQueryMixin, RetrieveAPIView):
             )
         return queryset.annotate(
             api_my_coupon_id=Value(None, output_field=models.UUIDField())
+        )
+
+
+class PromotionEventCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [PromotionEventIPThrottle]
+
+    EVENT_TYPE_MAP = {
+        'view': PromotionEvent.EventType.VIEW,
+        'channel_click': PromotionEvent.EventType.CHANNEL_CLICK,
+    }
+
+    def post(self, request, promotion_id):
+        promotion = Promotion.objects.filter(
+            pk=promotion_id,
+            is_published=True,
+            store__is_active=True,
+        ).first()
+        if promotion is None:
+            raise NotFound
+        input_serializer = PromotionEventInputSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        event_values = {
+            'id': data['event_id'],
+            'promotion': promotion,
+            'event_type': self.EVENT_TYPE_MAP[data['event_type']],
+            'channel': data['channel'],
+        }
+
+        try:
+            with transaction.atomic():
+                event = PromotionEvent.objects.create(**event_values)
+            created = True
+        except IntegrityError:
+            event = PromotionEvent.objects.filter(pk=data['event_id']).first()
+            if event is None:
+                raise
+            created = False
+
+        if not created and (
+            event.promotion_id != promotion.id
+            or event.event_type != event_values['event_type']
+            or event.channel != event_values['channel']
+        ):
+            raise PromotionEventConflict
+
+        return Response(
+            {
+                'created': created,
+                'event': PromotionEventSerializer(event).data,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
