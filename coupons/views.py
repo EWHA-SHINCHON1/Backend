@@ -9,6 +9,7 @@ from coupons.models import Coupon
 from coupons.pagination import MyCouponPagination
 from coupons.serializers import IssuedCouponSerializer, MyCouponDetailSerializer, MyCouponSerializer
 from coupons.services import issue_coupon, use_coupon
+from coupons.throttles import CouponIssueRateThrottle
 
 
 class PromotionCouponIssueView(APIView):
@@ -16,7 +17,10 @@ class PromotionCouponIssueView(APIView):
 
     본문은 {}이며 사용자는 세션의 로그인 사용자로 정합니다. CSRF 토큰(X-CSRFToken)이 필요합니다.
     최초 발급 201(created=true), 이미 받은 쿠폰이 있으면 200(created=false)과 기존 쿠폰을 돌려줍니다.
+    로그인 사용자별 분당 10회까지 요청할 수 있습니다. 초과 시 429 TOO_MANY_REQUESTS + Retry-After 헤더.
     """
+
+    throttle_classes = [CouponIssueRateThrottle]
 
     def post(self, request, promotion_id):
         coupon, created = issue_coupon(user=request.user, promotion_id=promotion_id)
