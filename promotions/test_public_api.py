@@ -77,9 +77,10 @@ class PromotionPublicListAPITests(PromotionPublicAPITestBase):
             {
                 'id', 'title', 'description', 'benefit', 'image_url', 'requires_coupon',
                 'starts_at', 'ends_at', 'redeem_until', 'status', 'total_quantity',
-                'remaining_quantity', 'featured_rank', 'store',
+                'remaining_quantity', 'featured_rank', 'is_saved', 'store',
             },
         )
+        self.assertFalse(item['is_saved'])
         self.assertEqual(item['status'], 'active')
         self.assertEqual(item['remaining_quantity'], 9)
         self.assertEqual(item['store']['category'], 'bakery_cafe')

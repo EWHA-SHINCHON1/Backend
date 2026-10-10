@@ -40,6 +40,7 @@ class PromotionPublicListSerializer(serializers.ModelSerializer):
     redeem_until = serializers.DateTimeField(format='iso-8601', allow_null=True, read_only=True)
     status = serializers.SerializerMethodField()
     remaining_quantity = serializers.SerializerMethodField()
+    is_saved = serializers.BooleanField(read_only=True)
     store = PromotionStoreSummarySerializer(read_only=True)
 
     class Meta:
@@ -58,6 +59,7 @@ class PromotionPublicListSerializer(serializers.ModelSerializer):
             'total_quantity',
             'remaining_quantity',
             'featured_rank',
+            'is_saved',
             'store',
         )
 

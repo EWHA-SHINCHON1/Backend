@@ -9,12 +9,14 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from config.health import health
+from promotions.views import SavedPromotionListView
 
 api_v1_patterns = [
     path('auth/', include('users.urls')),
     path('promotions/', include('promotions.urls')),
     path('stores/', include('stores.urls')),
     path('owner/', include('stores.owner_urls')),
+    path('me/saved-promotions/', SavedPromotionListView.as_view(), name='saved_promotions'),
     path('', include('coupons.urls')),
 ]
 
