@@ -26,8 +26,9 @@ Copy-Item .env.example .env
 # 4. 로컬 PostgreSQL 시작 (Docker Desktop 실행 필요)
 docker compose up -d
 
-# 5. 마이그레이션 적용 및 서버 실행
+# 5. 마이그레이션 적용, 캐시 테이블 생성(처음 한 번), 서버 실행
 python manage.py migrate
+python manage.py createcachetable
 python manage.py runserver
 ```
 
@@ -433,6 +434,9 @@ Base URL: `/api/v1/`
 | 409 | `PROMOTION_NOT_ACTIVE` | 발급 시작 전 |
 | 409 | `PROMOTION_ENDED` | 발급 기간 종료 |
 | 409 | `COUPON_SOLD_OUT` | 발급 수량 소진 (사용·만료된 쿠폰도 수량에 포함) |
+| 429 | `TOO_MANY_REQUESTS` | 요청 횟수 초과: 로그인 사용자별 분당 10회. `Retry-After` 헤더(초) 포함. 이미 받은 쿠폰 재요청도 횟수에 포함 |
+
+요청 횟수 기록은 DB 캐시(`django_cache` 테이블)에 저장합니다. 로컬에서 처음 한 번 `python manage.py createcachetable`을 실행하세요. (Railway는 pre-deploy에서 자동 실행)
 
 ### `GET /api/v1/me/coupons/`
 
