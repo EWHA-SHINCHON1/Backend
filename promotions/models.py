@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 from django.db.models import F, Q
 from django.utils import timezone
@@ -172,3 +173,44 @@ class PromotionEvent(models.Model):
 
     def __str__(self):
         return f'{self.promotion_id} {self.event_type} {self.channel}'.strip()
+
+
+class SavedPromotion(models.Model):
+    """사용자가 저장한 프로모션.
+
+    저장 여부는 이 관계의 존재로 판단하며 별도의 캐시 컬럼을 두지 않습니다.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='saved_promotions',
+        verbose_name='사용자',
+    )
+    promotion = models.ForeignKey(
+        Promotion,
+        on_delete=models.CASCADE,
+        related_name='saved_by',
+        verbose_name='프로모션',
+    )
+    created_at = models.DateTimeField('저장 시각', auto_now_add=True)
+
+    class Meta:
+        db_table = 'saved_promotions'
+        verbose_name = '저장한 프로모션'
+        verbose_name_plural = '저장한 프로모션'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'promotion'],
+                name='uniq_saved_promotion_user_promotion',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['user', '-created_at'],
+                name='saved_promo_user_created_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}:{self.promotion_id}'

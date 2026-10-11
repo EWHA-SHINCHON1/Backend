@@ -71,3 +71,42 @@ class Coupon(models.Model):
         if now >= self.expires_at:
             return self.Status.EXPIRED
         return self.Status.AVAILABLE
+
+
+class PinAttempt(models.Model):
+    """쿠폰 사용 PIN 실패 기록. 사용자+매장 단위로 한 행을 두고 실패 횟수 제한에 씁니다.
+
+    - 매장 PIN 불일치(INVALID_PIN)만 셉니다. 형식 오류·PIN 미설정은 세지 않습니다.
+    - 첫 실패부터 일정 시간 안에 허용 횟수만큼 틀리면 locked_until까지 차단합니다.
+    - PIN이 맞으면 기록을 초기화합니다.
+    - 서버 프로세스 간에 공유되도록 DB에 저장합니다. (로컬 메모리 캐시는 워커별로 따로라 쓰지 않음)
+    - 이력 보존용이 아니라 일시적인 제한 상태이므로 사용자·매장 삭제 시 함께 지웁니다.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='pin_attempts',
+        verbose_name='사용자',
+    )
+    store = models.ForeignKey(
+        'stores.Store',
+        on_delete=models.CASCADE,
+        related_name='pin_attempts',
+        verbose_name='매장',
+    )
+    failure_count = models.PositiveSmallIntegerField('연속 실패 횟수', default=0)
+    first_failed_at = models.DateTimeField('첫 실패 시각', null=True, blank=True)
+    locked_until = models.DateTimeField('차단 해제 시각', null=True, blank=True)
+    updated_at = models.DateTimeField('수정 시각', auto_now=True)
+
+    class Meta:
+        db_table = 'coupon_pin_attempts'
+        verbose_name = 'PIN 실패 기록'
+        verbose_name_plural = 'PIN 실패 기록'
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'store'], name='uniq_pin_attempt_user_store'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}@{self.store_id}: {self.failure_count}'

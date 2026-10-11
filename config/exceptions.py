@@ -42,5 +42,10 @@ def custom_exception_handler(exc, context):
         response.data = _error('BAD_REQUEST', '요청 형식이 올바르지 않습니다.')
     else:
         code = getattr(exc, 'default_code', 'error').upper()
-        response.data = _error(code, str(getattr(exc, 'detail', '요청을 처리할 수 없습니다.')))
+        # 예외가 details(dict)를 가지면 함께 내려줍니다. (예: 남은 PIN 시도 횟수)
+        response.data = _error(
+            code,
+            str(getattr(exc, 'detail', '요청을 처리할 수 없습니다.')),
+            details=getattr(exc, 'details', None),
+        )
     return response
