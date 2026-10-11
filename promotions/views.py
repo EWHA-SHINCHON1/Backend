@@ -1,16 +1,32 @@
-from django.db import models
-from django.db.models import Case, Count, F, OuterRef, Q, Subquery, Value, When
+from django.db import IntegrityError, models, transaction
+from django.db.models import BooleanField, Case, Count, Exists, F, OuterRef, Q, Subquery, Value, When
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from django.utils.cache import patch_cache_control, patch_vary_headers
+from rest_framework import status
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from coupons.models import Coupon
 from stores.models import Store
 
-from .models import Promotion
-from .serializers import PromotionPublicDetailSerializer, PromotionPublicListSerializer
+from .models import Promotion, PromotionEvent, SavedPromotion
+from .serializers import (
+    PromotionEventInputSerializer,
+    PromotionEventSerializer,
+    PromotionPublicDetailSerializer,
+    PromotionPublicListSerializer,
+)
+from .throttles import PromotionEventIPThrottle
+
+
+class PromotionEventConflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = 'EVENT_ID_CONFLICT'
+    default_detail = '이미 다른 이벤트에 사용된 event_id입니다.'
 
 
 class PromotionPublicPagination(PageNumberPagination):
@@ -25,14 +41,28 @@ class PromotionPublicQueryMixin:
         self.now = timezone.now()
 
     def public_queryset(self):
-        return (
+        queryset = (
             Promotion.objects.filter(is_published=True, store__is_active=True)
             .select_related('store')
             .annotate(api_issued_count=Count('coupons'))
         )
+        if self.request.user.is_authenticated:
+            saved = SavedPromotion.objects.filter(
+                user=self.request.user,
+                promotion_id=OuterRef('pk'),
+            )
+            return queryset.annotate(is_saved=Exists(saved))
+        return queryset.annotate(is_saved=Value(False, output_field=BooleanField()))
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), 'now': self.now}
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        # is_saved가 사용자별 값이므로 공유 캐시에 개인화 응답을 저장하지 않습니다.
+        patch_cache_control(response, private=True, no_store=True)
+        patch_vary_headers(response, ('Cookie',))
+        return response
 
 
 class PromotionPublicListView(PromotionPublicQueryMixin, ListAPIView):
@@ -148,4 +178,122 @@ class PromotionPublicDetailView(PromotionPublicQueryMixin, RetrieveAPIView):
             )
         return queryset.annotate(
             api_my_coupon_id=Value(None, output_field=models.UUIDField())
+        )
+
+
+class PromotionBookmarkView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, promotion_id):
+        promotion = Promotion.objects.filter(
+            pk=promotion_id,
+            is_published=True,
+            store__is_active=True,
+        ).first()
+        if promotion is None:
+            raise NotFound
+
+        _saved, created = SavedPromotion.objects.get_or_create(
+            user=request.user,
+            promotion=promotion,
+        )
+        return Response(
+            {'saved': True, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request, promotion_id):
+        # 공개 상태가 바뀐 뒤에도 본인의 기존 저장 기록은 제거할 수 있습니다.
+        SavedPromotion.objects.filter(
+            user=request.user,
+            promotion_id=promotion_id,
+        ).delete()
+        return Response({'saved': False}, status=status.HTTP_200_OK)
+
+
+class SavedPromotionListView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = PromotionPublicListSerializer
+    pagination_class = PromotionPublicPagination
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        self.now = timezone.now()
+
+    def get_queryset(self):
+        return (
+            Promotion.objects.filter(
+                is_published=True,
+                store__is_active=True,
+                saved_by__user=self.request.user,
+            )
+            .select_related('store')
+            .annotate(
+                api_issued_count=Count('coupons'),
+                is_saved=Value(True, output_field=BooleanField()),
+            )
+            .order_by('-saved_by__created_at', '-saved_by__id')
+        )
+
+    def get_serializer_context(self):
+        return {**super().get_serializer_context(), 'now': self.now}
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        patch_cache_control(response, private=True, no_store=True)
+        patch_vary_headers(response, ('Cookie',))
+        return response
+
+
+class PromotionEventCreateView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [PromotionEventIPThrottle]
+
+    EVENT_TYPE_MAP = {
+        'view': PromotionEvent.EventType.VIEW,
+        'channel_click': PromotionEvent.EventType.CHANNEL_CLICK,
+    }
+
+    def post(self, request, promotion_id):
+        promotion = Promotion.objects.filter(
+            pk=promotion_id,
+            is_published=True,
+            store__is_active=True,
+        ).first()
+        if promotion is None:
+            raise NotFound
+        input_serializer = PromotionEventInputSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        event_values = {
+            'id': data['event_id'],
+            'promotion': promotion,
+            'event_type': self.EVENT_TYPE_MAP[data['event_type']],
+            'channel': data['channel'],
+        }
+
+        try:
+            with transaction.atomic():
+                event = PromotionEvent.objects.create(**event_values)
+            created = True
+        except IntegrityError:
+            event = PromotionEvent.objects.filter(pk=data['event_id']).first()
+            if event is None:
+                raise
+            created = False
+
+        if not created and (
+            event.promotion_id != promotion.id
+            or event.event_type != event_values['event_type']
+            or event.channel != event_values['channel']
+        ):
+            raise PromotionEventConflict
+
+        return Response(
+            {
+                'created': created,
+                'event': PromotionEventSerializer(event).data,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
