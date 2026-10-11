@@ -18,10 +18,12 @@ from coupons.tests.helpers import (
     logged_in_client,
     make_non_coupon_promotion,
     make_promotion,
+    make_store,
     run_in_thread,
     wait_for_lock_waiter,
 )
 from promotions.models import Promotion
+from stores.models import Store
 
 User = get_user_model()
 
@@ -129,6 +131,11 @@ class CouponIssueTests(TestCase):
         )
         self.assert_returns_existing(coupon, 'available')
 
+    def test_existing_coupon_returned_after_store_deactivated(self):
+        coupon = self.issue_existing()
+        Store.objects.filter(pk=self.promotion.store_id).update(is_active=False)
+        self.assert_returns_existing(coupon, 'available')
+
     # 인증·CSRF
 
     def test_anonymous_is_rejected(self):
@@ -168,6 +175,41 @@ class CouponIssueTests(TestCase):
             self.promotion.is_published = False
             self.promotion.save()
             self.assert_error(self.post(), 404, 'PROMOTION_NOT_FOUND')
+
+    def test_inactive_store_promotion_is_not_found(self):
+        """공개 API에서 숨겨지는 비활성 매장 프로모션은 id를 알아도 신규 발급 불가"""
+        Store.objects.filter(pk=self.promotion.store_id).update(is_active=False)
+        self.assert_error(self.post(), 404, 'PROMOTION_NOT_FOUND')
+
+    def test_inactive_store_hides_other_reasons(self):
+        """비활성 매장이면 비쿠폰형·시작 전·종료·소진 여부를 드러내지 않고 404"""
+        inactive = make_store(is_active=False)
+        cases = {
+            'non_coupon': make_non_coupon_promotion(inactive),
+            'not_started': make_promotion(
+                inactive, starts_at=timezone.now() + timedelta(days=1), ends_at=timezone.now() + timedelta(days=2)
+            ),
+            'sold_out': make_promotion(inactive, total_quantity=1),
+        }
+        Coupon.objects.create(
+            user=User.objects.create_user(username='u2'),
+            promotion=cases['sold_out'],
+            expires_at=cases['sold_out'].redeem_until,
+        )
+        for name, promotion in cases.items():
+            with self.subTest(name):
+                response = self.post(promotion_id=promotion.pk)
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(response.json()['error']['code'], 'PROMOTION_NOT_FOUND')
+        with freeze(self.promotion.ends_at):
+            Store.objects.filter(pk=self.promotion.store_id).update(is_active=False)
+            self.assert_error(self.post(), 404, 'PROMOTION_NOT_FOUND')
+
+    def test_reactivated_store_can_issue_again(self):
+        Store.objects.filter(pk=self.promotion.store_id).update(is_active=False)
+        self.assert_error(self.post(), 404, 'PROMOTION_NOT_FOUND')
+        Store.objects.filter(pk=self.promotion.store_id).update(is_active=True)
+        self.assertEqual(self.post().status_code, 201)
 
     def test_non_coupon_promotion(self):
         promotion = make_non_coupon_promotion()
