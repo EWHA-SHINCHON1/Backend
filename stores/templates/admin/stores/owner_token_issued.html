@@ -1,0 +1,14 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  {% if already_processed %}
+    <p>이 발급 요청은 이미 처리되었습니다.</p>
+    <p>원본 링크를 분실했다면 목록으로 돌아가 새 링크를 재발급하세요.</p>
+  {% else %}
+    <p><strong>{{ store }}</strong>의 Owner Secret Link입니다.</p>
+    <p>이 링크는 다시 조회할 수 없습니다. 지금 안전한 방법으로 점주에게 전달하세요.</p>
+    <p><code id="owner-secret-link">{{ secret_link }}</code></p>
+    <p>만료 시각: {{ access_token.expires_at }}</p>
+  {% endif %}
+  <p><a href="{{ back_url }}" class="button">목록으로 돌아가기</a></p>
+{% endblock %}

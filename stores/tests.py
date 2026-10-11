@@ -22,6 +22,10 @@ class StoreTests(TestCase):
         store = make_store()
         self.assertTrue(store.is_active)
         self.assertEqual(store.promotion_context, '')
+        self.assertEqual(store.story_title, '')
+        self.assertEqual(store.story, '')
+        self.assertEqual(store.story_image_url, '')
+        self.assertEqual(store.story_after_image, '')
         self.assertEqual(store.usage_pin_hash, '')
         self.assertIsNone(store.pin_updated_at)
         self.assertFalse(store.has_usage_pin)
@@ -85,6 +89,23 @@ class StoreMenuTests(TestCase):
         StoreMenu.objects.create(store=self.store, name='B', price=3000, sort_order=2)
         StoreMenu.objects.create(store=self.store, name='A', price=0, sort_order=1)
         self.assertEqual([m.name for m in self.store.menus.all()], ['A', 'B'])
+
+    def test_description_and_image_url_allow_values_and_empty_defaults(self):
+        described = StoreMenu.objects.create(
+            store=self.store,
+            name='소금빵',
+            description='매일 아침 굽는 메뉴',
+            price=3500,
+            image_url='https://example.com/salt-bread.jpg',
+        )
+        empty = StoreMenu.objects.create(store=self.store, name='기본 메뉴', price=1000)
+
+        described.refresh_from_db()
+        empty.refresh_from_db()
+        self.assertEqual(described.description, '매일 아침 굽는 메뉴')
+        self.assertEqual(described.image_url, 'https://example.com/salt-bread.jpg')
+        self.assertEqual(empty.description, '')
+        self.assertEqual(empty.image_url, '')
 
     def test_negative_price_is_rejected_by_db(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -204,7 +225,10 @@ class StoreAdminIntegrationTests(TestCase):
             'address': '서울 서대문구 연세로',
             'business_hours': '매일 10:00~20:00',
             'image_url': '',
+            'story_title': '우리 가게 이야기',
             'story': '매장 소개',
+            'story_image_url': 'https://example.com/story.jpg',
+            'story_after_image': '사진 이후 이야기',
             'promotion_context': '외부에 공개하지 않는 운영 메모',
             'map_url': '',
             'instagram_url': '',
@@ -228,7 +252,9 @@ class StoreAdminIntegrationTests(TestCase):
                 **{
                     'menus-TOTAL_FORMS': '1',
                     'menus-0-name': '소금빵',
+                    'menus-0-description': '매일 아침 굽습니다.',
                     'menus-0-price': '3500',
+                    'menus-0-image_url': 'https://example.com/menu.jpg',
                     'menus-0-sort_order': '2',
                 },
             ),
@@ -242,13 +268,20 @@ class StoreAdminIntegrationTests(TestCase):
         self.assertNotEqual(store.usage_pin_hash, '0428')
         self.assertNotIn('0428', store.usage_pin_hash)
         self.assertIsNotNone(store.pin_updated_at)
+        self.assertEqual(store.story_title, '우리 가게 이야기')
+        self.assertEqual(store.story, '매장 소개')
+        self.assertEqual(store.story_image_url, 'https://example.com/story.jpg')
+        self.assertEqual(store.story_after_image, '사진 이후 이야기')
         menu = store.menus.get()
         self.assertEqual((menu.name, menu.price, menu.sort_order), ('소금빵', 3500, 2))
+        self.assertEqual(menu.description, '매일 아침 굽습니다.')
+        self.assertEqual(menu.image_url, 'https://example.com/menu.jpg')
 
     def test_blank_pin_on_change_preserves_existing_pin_and_updates_store(self):
         store = make_store()
         store.set_usage_pin('0428')
         store.save()
+        menu = StoreMenu.objects.create(store=store, name='기존 메뉴', price=3000)
         original_hash = store.usage_pin_hash
         original_pin_updated_at = store.pin_updated_at
 
@@ -256,8 +289,22 @@ class StoreAdminIntegrationTests(TestCase):
             reverse('admin:stores_store_change', args=[store.pk]),
             self.store_data(
                 name='수정된 매장명',
+                story_title='수정된 이야기 제목',
+                story='수정된 이미지 앞 이야기',
+                story_image_url='https://example.com/updated-story.jpg',
+                story_after_image='수정된 이미지 뒤 이야기',
                 usage_pin='',
                 usage_pin_confirmation='',
+                **{
+                    'menus-TOTAL_FORMS': '1',
+                    'menus-INITIAL_FORMS': '1',
+                    'menus-0-id': str(menu.pk),
+                    'menus-0-name': '수정된 메뉴',
+                    'menus-0-description': '수정된 메뉴 설명',
+                    'menus-0-price': '3200',
+                    'menus-0-image_url': 'https://example.com/updated-menu.jpg',
+                    'menus-0-sort_order': '1',
+                },
             ),
         )
 
@@ -267,6 +314,16 @@ class StoreAdminIntegrationTests(TestCase):
         self.assertEqual(store.usage_pin_hash, original_hash)
         self.assertEqual(store.pin_updated_at, original_pin_updated_at)
         self.assertTrue(store.check_usage_pin('0428'))
+        self.assertEqual(store.story_title, '수정된 이야기 제목')
+        self.assertEqual(store.story, '수정된 이미지 앞 이야기')
+        self.assertEqual(store.story_image_url, 'https://example.com/updated-story.jpg')
+        self.assertEqual(store.story_after_image, '수정된 이미지 뒤 이야기')
+        menu.refresh_from_db()
+        self.assertEqual(menu.name, '수정된 메뉴')
+        self.assertEqual(menu.description, '수정된 메뉴 설명')
+        self.assertEqual(menu.price, 3200)
+        self.assertEqual(menu.image_url, 'https://example.com/updated-menu.jpg')
+        self.assertEqual(menu.sort_order, 1)
 
     def test_changing_pin_invalidates_previous_pin(self):
         store = make_store()
