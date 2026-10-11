@@ -25,7 +25,9 @@ def issue_coupon(*, user, promotion_id):
 
     - Promotion 행을 먼저 잠가 같은 프로모션의 발급 요청과 Admin 수정을 한 줄로 세웁니다.
       (Admin 폼도 같은 행을 select_for_update로 잠근 뒤 발급 수를 셉니다.)
-    - 이미 받은 쿠폰이 있으면 공개·기간·수량과 관계없이 기존 쿠폰을 돌려줍니다.
+    - 이미 받은 쿠폰이 있으면 공개·매장 운영 여부·기간·수량과 관계없이 기존 쿠폰을 돌려줍니다.
+    - 비공개 프로모션과 비활성 매장(Store.is_active=False)의 프로모션은 공개 API에서 숨기므로
+      신규 발급도 PROMOTION_NOT_FOUND(404)로 막습니다.
     - 기준 시각과 발급 수는 잠금을 얻은 뒤에 구합니다.
     """
     try:
@@ -38,8 +40,9 @@ def issue_coupon(*, user, promotion_id):
         return coupon, False
 
     now = timezone.now()
-    # 비공개 프로모션은 다른 조건보다 먼저 404로 처리해 유형·기간·수량을 드러내지 않습니다.
-    if not promotion.is_published:
+    # 비공개 프로모션·비활성 매장은 다른 조건보다 먼저 404로 처리해 유형·기간·수량을 드러내지 않습니다.
+    # (공개 API의 노출 조건 is_published=True, store__is_active=True와 맞춤)
+    if not promotion.is_published or not promotion.store.is_active:
         raise exceptions.PromotionNotFound
     if not promotion.requires_coupon:
         raise exceptions.PromotionCouponNotRequired
