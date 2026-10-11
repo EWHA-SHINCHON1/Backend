@@ -425,11 +425,11 @@ Base URL: `/api/v1/`
 
 - 본문: `{}`. 처음 받으면 `201` `{"created": true, "coupon": {...}}`, 이미 받았으면 `200` `{"created": false, "coupon": {기존 쿠폰}}`
 - `coupon`: `id`(UUID), `status`, `issued_at`, `expires_at`(발급 시 프로모션의 `redeem_until`을 복사)
-- 이미 받은 쿠폰은 사용·만료·프로모션 종료·비공개·품절이어도 재발급하지 않고 기존 쿠폰을 돌려줍니다.
+- 이미 받은 쿠폰은 사용·만료·프로모션 종료·비공개·품절·매장 비활성이어도 재발급하지 않고 기존 쿠폰을 돌려줍니다.
 
 | HTTP | code | 상황 |
 | --- | --- | --- |
-| 404 | `PROMOTION_NOT_FOUND` | 없거나 비공개인 프로모션 |
+| 404 | `PROMOTION_NOT_FOUND` | 없거나 비공개인 프로모션, 또는 비활성 매장(`is_active=False`)의 프로모션 (공개 API 노출 조건과 동일) |
 | 400 | `PROMOTION_COUPON_NOT_REQUIRED` | 쿠폰 없이 참여하는 프로모션 |
 | 409 | `PROMOTION_NOT_ACTIVE` | 발급 시작 전 |
 | 409 | `PROMOTION_ENDED` | 발급 기간 종료 |
