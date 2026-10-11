@@ -267,6 +267,11 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'coupon_issue': '10/min',  # 쿠폰 발급: 로그인 사용자별 분당 10회
     },
+    # IP 기준 제한(이벤트 API)에서 클라이언트 IP를 정하는 방법: 서버 앞 프록시 수.
+    # X-Forwarded-For의 뒤에서 N번째 값(프록시가 붙인 값)만 믿어, 클라이언트가 보낸 가짜 IP를 무시합니다.
+    # Railway(api.godguum.com 직접 호출)는 프록시 1단계 → 1. 헤더가 없으면(로컬) REMOTE_ADDR을 씁니다.
+    # 너무 크면 위조 가능, 0이면 모든 요청이 프록시 IP로 묶이므로 배포 환경의 실제 헤더로 확인 후 조정합니다.
+    'NUM_PROXIES': env.int('NUM_PROXIES', default=1),
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S%z',
     'DATE_FORMAT': '%Y-%m-%d',
     'TIME_FORMAT': '%H:%M:%S',
