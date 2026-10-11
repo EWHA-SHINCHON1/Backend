@@ -228,6 +228,32 @@ class PromotionEventAPITests(TestCase):
         self.assertIn('Retry-After', blocked)
         self.assertEqual(PromotionEvent.objects.count(), 60)
 
+    # 프록시(Railway) 뒤 IP 식별: NUM_PROXIES=1이면 X-Forwarded-For의 마지막 값(프록시가 붙인 값)만 사용
+
+    def post_via_proxy(self, xff, proxy_addr='10.0.0.1'):
+        return self.post(
+            {'event_id': str(uuid.uuid4()), 'event_type': 'view'},
+            REMOTE_ADDR=proxy_addr,
+            HTTP_X_FORWARDED_FOR=xff,
+        )
+
+    def test_spoofed_forwarded_for_cannot_bypass_ip_throttle(self):
+        # 클라이언트가 매번 다른 가짜 IP를 앞에 넣어도, 프록시가 붙인 진짜 IP(마지막 값)로 셉니다.
+        for index in range(60):
+            response = self.post_via_proxy(f'192.0.2.{index}, 198.51.100.20')
+            self.assertEqual(response.status_code, 201)
+
+        blocked = self.post_via_proxy('192.0.2.250, 198.51.100.20')
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(PromotionEvent.objects.count(), 60)
+
+    def test_clients_behind_proxy_are_counted_separately(self):
+        # 같은 프록시 IP로 들어와도 실제 클라이언트가 다르면 따로 셉니다. (전체가 한 IP로 묶이지 않음)
+        for _index in range(60):
+            self.assertEqual(self.post_via_proxy('198.51.100.30').status_code, 201)
+        self.assertEqual(self.post_via_proxy('198.51.100.30').status_code, 429)
+        self.assertEqual(self.post_via_proxy('198.51.100.31').status_code, 201)
+
 
 @skipUnless(connection.vendor == 'postgresql', 'Concurrent idempotency requires PostgreSQL.')
 class ConcurrentPromotionEventAPITests(TransactionTestCase):
