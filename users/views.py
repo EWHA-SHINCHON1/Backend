@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.contrib.auth import login, logout
 from django.http import HttpResponseRedirect
+from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -119,12 +120,14 @@ class MeView(APIView):
 
     비로그인도 200으로 is_authenticated=false를 돌려줍니다.
     프론트가 이후 POST 요청에 쓸 수 있도록 csrftoken 쿠키도 함께 내려줍니다.
+    프론트가 API와 다른 사이트(예: localhost)라 document.cookie로 csrftoken을 읽지 못하는 경우를 위해
+    같은 값을 응답 본문 csrf_token에도 담습니다. 본문은 CORS 허용 출처에서만 읽을 수 있습니다.
     """
 
     permission_classes = [AllowAny]
 
     def get(self, request):
-        return Response(MeSerializer(request.user).data)
+        return Response({**MeSerializer(request.user).data, 'csrf_token': get_token(request)})
 
 
 class LogoutView(APIView):

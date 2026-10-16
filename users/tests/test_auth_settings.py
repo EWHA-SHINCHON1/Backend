@@ -1,4 +1,7 @@
+from unittest import mock
+
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase, override_settings
 from django.urls import include, path
 from rest_framework.response import Response
@@ -70,3 +73,31 @@ class SessionAuthSettingsTests(TestCase):
     def test_old_jwt_endpoint_is_removed(self):
         response = APIClient().post('/api/auth/token/', {'username': 'u1', 'password': 'x'})
         self.assertEqual(response.status_code, 404)
+
+
+class SameSiteSettingTests(TestCase):
+    """SESSION/CSRF_COOKIE_SAMESITE 환경변수 해석"""
+
+    def _samesite(self, value, secure=True):
+        from config import settings as project_settings
+
+        with mock.patch.dict('os.environ', {'SESSION_COOKIE_SAMESITE': value}):
+            return project_settings._samesite('SESSION_COOKIE_SAMESITE', secure)
+
+    def test_values_are_normalized(self):
+        self.assertEqual(self._samesite('lax'), 'Lax')
+        self.assertEqual(self._samesite('Strict'), 'Strict')
+        self.assertEqual(self._samesite('NONE'), 'None')
+
+    def test_invalid_value_is_rejected(self):
+        with self.assertRaises(ImproperlyConfigured):
+            self._samesite('off')
+
+    def test_none_requires_secure(self):
+        with self.assertRaises(ImproperlyConfigured):
+            self._samesite('None', secure=False)
+
+    @override_settings(SESSION_COOKIE_SAMESITE='None', CSRF_COOKIE_SAMESITE='None', CSRF_COOKIE_SECURE=True)
+    def test_me_sets_samesite_none_cookie(self):
+        response = APIClient().get('/api/v1/auth/me/')
+        self.assertEqual(response.cookies['csrftoken']['samesite'], 'None')
