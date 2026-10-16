@@ -35,14 +35,18 @@ class MeTests(TestCase):
     def test_anonymous(self):
         response = APIClient().get(ME_URL)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {'id': None, 'nickname': None, 'is_authenticated': False})
+        body = response.json()
+        body.pop('csrf_token')
+        self.assertEqual(body, {'id': None, 'nickname': None, 'is_authenticated': False})
 
     def test_authenticated(self):
         client = APIClient()
         client.force_login(self.user)
         response = client.get(ME_URL)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {'id': self.user.id, 'nickname': '연우', 'is_authenticated': True})
+        body = response.json()
+        body.pop('csrf_token')
+        self.assertEqual(body, {'id': self.user.id, 'nickname': '연우', 'is_authenticated': True})
 
     def test_returns_only_own_info(self):
         other = User.objects.create_user(username='kakao_y', nickname='아령')
@@ -54,7 +58,7 @@ class MeTests(TestCase):
         client = APIClient()
         client.force_login(self.user)
         body = client.get(ME_URL).json()
-        self.assertEqual(set(body), {'id', 'nickname', 'is_authenticated'})
+        self.assertEqual(set(body), {'id', 'nickname', 'is_authenticated', 'csrf_token'})
         text = client.get(ME_URL).content.decode()
         for secret in ('password', 'kakao_x', 'is_staff', 'secret-pw', self.user.password):
             self.assertNotIn(secret, text)
@@ -63,6 +67,13 @@ class MeTests(TestCase):
         response = APIClient().get(ME_URL)
         self.assertIn('csrftoken', response.cookies)
         self.assertIn('no-cache', response['Cache-Control'])
+
+    def test_body_csrf_token_passes_csrf_check(self):
+        # 쿠키를 JS로 못 읽는 교차 사이트 프론트는 본문 csrf_token을 X-CSRFToken 헤더로 보낸다.
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(self.user)
+        token = client.get(ME_URL).json()['csrf_token']
+        self.assertEqual(client.post(LOGOUT_URL, HTTP_X_CSRFTOKEN=token).status_code, 204)
 
     def test_post_not_allowed(self):
         response = APIClient().post(ME_URL)

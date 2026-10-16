@@ -162,6 +162,8 @@ python -c "from django.core.management.utils import get_random_secret_key; print
 | `SESSION_COOKIE_SECURE` | | `False` | 운영(HTTPS)에서 `True` |
 | `CSRF_COOKIE_SECURE` | | `False` | 운영(HTTPS)에서 `True` |
 | `CSRF_COOKIE_DOMAIN` | | (없음) | 운영에서 상위 도메인 (예: `.godgoowm.com`). 개발에서는 비움 |
+| `SESSION_COOKIE_SAMESITE` | | `Lax` | `Lax`·`Strict`·`None`. 로컬 프론트(`http://localhost:5173`)가 운영 API를 부를 때만 `None` (HTTPS 필수) |
+| `CSRF_COOKIE_SAMESITE` | | `Lax` | 위와 같은 값으로 맞춥니다 |
 | `KAKAO_REST_API_KEY` | 카카오 로그인 시 | - | 카카오 앱의 **REST API 키** |
 | `KAKAO_CLIENT_SECRET` | 카카오 로그인 시 | - | 카카오 Client Secret (카카오 앱 기본값이 '사용함'이라 필수) |
 | `KAKAO_CLIENT_SECRET_ENABLED` | | `True` | 콘솔에서 Client Secret을 '사용 안 함'으로 바꾼 경우에만 `False` |
@@ -275,13 +277,14 @@ Base URL: `/api/v1/`
 
 ```json
 // 로그인
-{"id": 7, "nickname": "연우", "is_authenticated": true}
+{"id": 7, "nickname": "연우", "is_authenticated": true, "csrf_token": "..."}
 
 // 비로그인
-{"id": null, "nickname": null, "is_authenticated": false}
+{"id": null, "nickname": null, "is_authenticated": false, "csrf_token": "..."}
 ```
 
 - 응답과 함께 `csrftoken` 쿠키를 내려줍니다. 앱 첫 화면에서 한 번 호출해 두면 이후 POST 요청에 쓸 수 있습니다.
+- `csrf_token`은 같은 토큰을 본문에 담은 값입니다. 프론트가 API와 다른 사이트(예: `localhost:5173` → 운영 API)라 `document.cookie`로 `csrftoken`을 읽을 수 없을 때 이 값을 `X-CSRFToken` 헤더로 보냅니다.
 - `nickname`은 빈 문자열(`""`)일 수 있습니다. (카카오 닉네임 미동의)
 
 ### `POST /api/v1/auth/logout/`

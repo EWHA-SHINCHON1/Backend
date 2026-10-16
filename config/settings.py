@@ -31,6 +31,8 @@ env = environ.Env(
     SESSION_COOKIE_SECURE=(bool, False),
     CSRF_COOKIE_SECURE=(bool, False),
     CSRF_COOKIE_DOMAIN=(str, ''),
+    SESSION_COOKIE_SAMESITE=(str, 'Lax'),
+    CSRF_COOKIE_SAMESITE=(str, 'Lax'),
     KAKAO_REST_API_KEY=(str, ''),
     KAKAO_CLIENT_SECRET=(str, ''),
     KAKAO_CLIENT_SECRET_ENABLED=(bool, True),
@@ -234,6 +236,24 @@ CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS')
 SESSION_COOKIE_SECURE = IS_PRODUCTION or env('SESSION_COOKIE_SECURE')
 CSRF_COOKIE_SECURE = IS_PRODUCTION or env('CSRF_COOKIE_SECURE')
 CSRF_COOKIE_DOMAIN = env('CSRF_COOKIE_DOMAIN') or None
+
+# SameSite: 기본값 Lax. 다른 사이트(예: 로컬 프론트 http://localhost:5173)에서 운영 API를
+# credentials 포함 fetch로 호출해야 할 때만 None으로 설정합니다. 이때 세션·CSRF 쿠키가 모두 실려야 하므로 둘 다 None으로 둡니다.
+# 브라우저는 SameSite=None 쿠키에 Secure를 요구하므로 None이면 *_COOKIE_SECURE도 True여야 합니다.
+_SAMESITE_VALUES = {'lax': 'Lax', 'strict': 'Strict', 'none': 'None'}
+
+
+def _samesite(name, secure):
+    value = _SAMESITE_VALUES.get(env(name).strip().lower())
+    if value is None:
+        raise ImproperlyConfigured(f'{name}은 Lax, Strict, None 중 하나여야 합니다.')
+    if value == 'None' and not secure:
+        raise ImproperlyConfigured(f'{name}=None이면 Secure 쿠키(HTTPS)가 필요합니다.')
+    return value
+
+
+SESSION_COOKIE_SAMESITE = _samesite('SESSION_COOKIE_SAMESITE', SESSION_COOKIE_SECURE)
+CSRF_COOKIE_SAMESITE = _samesite('CSRF_COOKIE_SAMESITE', CSRF_COOKIE_SECURE)
 
 
 # Cache
