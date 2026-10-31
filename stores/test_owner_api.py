@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from coupons.models import Coupon
+from coupons.tests.helpers import make_coupon
 from promotions.models import Promotion, PromotionEvent
 from stores.models import Store
 from stores.owner_serializers import get_period_status
@@ -77,7 +78,7 @@ def add_coupons(promotion, *, issued, used, expired=0):
         user = User.objects.create_user(username=f'user-{promotion.id}-{index}')
         is_used = index < used
         is_expired = used <= index < used + expired
-        coupons.append(Coupon.objects.create(
+        coupons.append(make_coupon(
             user=user,
             promotion=promotion,
             expires_at=now - timedelta(days=1) if is_expired else now + timedelta(days=1),

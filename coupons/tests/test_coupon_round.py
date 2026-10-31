@@ -21,7 +21,7 @@ def make_round(promotion, expires_at, quantity=30):
 
 class CouponRoundModelTests(TestCase):
     def setUp(self):
-        self.promotion = make_promotion()
+        self.promotion = make_promotion(with_round=False)
 
     def test_round_date_is_seoul_date_of_expires_at(self):
         # 11/1 00:30 KST = 10/31 15:30 UTC. UTC 날짜가 아니라 한국 날짜여야 한다.
@@ -39,7 +39,7 @@ class CouponRoundModelTests(TestCase):
             make_round(self.promotion, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
 
     def test_same_day_allowed_for_different_promotions(self):
-        other = make_promotion()
+        other = make_promotion(with_round=False)
         make_round(self.promotion, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
         make_round(other, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
         self.assertEqual(CouponRound.objects.count(), 2)
@@ -48,18 +48,34 @@ class CouponRoundModelTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             make_round(self.promotion, datetime(2026, 11, 1, 21, 0, tzinfo=KST), quantity=0)
 
-    def test_coupon_round_is_optional_until_issue_logic_switches(self):
-        coupon = Coupon.objects.create(
-            user=User.objects.create_user(username='u1'),
-            promotion=self.promotion,
-            expires_at=self.promotion.redeem_until,
-        )
-        self.assertIsNone(coupon.round)
+    def test_coupon_requires_round(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Coupon.objects.create(
+                user=User.objects.create_user(username='u1'),
+                promotion=self.promotion,
+                expires_at=self.promotion.redeem_until,
+            )
+
+    def test_same_user_once_per_round_but_again_in_next_round(self):
+        user = User.objects.create_user(username='u1')
+        today = make_round(self.promotion, timezone.now() + timedelta(hours=1))
+        tomorrow = make_round(self.promotion, timezone.now() + timedelta(days=1))
+
+        def create(coupon_round):
+            return Coupon.objects.create(
+                user=user, promotion=self.promotion, round=coupon_round, expires_at=coupon_round.expires_at,
+            )
+
+        create(today)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            create(today)
+        create(tomorrow)
+        self.assertEqual(user.coupons.filter(promotion=self.promotion).count(), 2)
 
 
 class CouponRoundDeletePolicyTests(TestCase):
     def setUp(self):
-        self.promotion = make_promotion()
+        self.promotion = make_promotion(with_round=False)
         self.coupon_round = make_round(self.promotion, timezone.now() + timedelta(hours=3))
 
     def test_round_with_coupon_cannot_be_deleted(self):

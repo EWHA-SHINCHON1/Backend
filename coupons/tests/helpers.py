@@ -6,6 +6,7 @@ from django.db import connection
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from coupons.models import Coupon, CouponRound
 from promotions.models import Promotion
 from stores.models import Store
 
@@ -22,7 +23,8 @@ def make_store(**kwargs):
     return Store.objects.create(**data)
 
 
-def make_promotion(store=None, **kwargs):
+def make_promotion(store=None, *, with_round=True, **kwargs):
+    """쿠폰형이면 기본으로 오늘 발급분(수량 = total_quantity)을 함께 만든다."""
     now = timezone.now().replace(microsecond=0)
     data = {
         'store': store or make_store(),
@@ -34,7 +36,10 @@ def make_promotion(store=None, **kwargs):
         'is_published': True,
     }
     data.update(kwargs)
-    return Promotion.objects.create(**data)
+    promotion = Promotion.objects.create(**data)
+    if with_round and promotion.requires_coupon:
+        make_round(promotion)
+    return promotion
 
 
 def make_non_coupon_promotion(store=None, **kwargs):
@@ -42,6 +47,40 @@ def make_non_coupon_promotion(store=None, **kwargs):
     kwargs.setdefault('redeem_until', None)
     kwargs.setdefault('total_quantity', None)
     return make_promotion(store, **kwargs)
+
+
+def end_of_day(moment):
+    """moment가 속한 Asia/Seoul 날짜의 23:59:59"""
+    return timezone.localtime(moment).replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def make_round(promotion, *, day=None, expires_at=None, quantity=None):
+    """day(기준 시각, 기본 지금)의 발급분. 사용 마감 기본값은 그날 23:59:59와 redeem_until 중 이른 쪽."""
+    if expires_at is None:
+        expires_at = end_of_day(day or timezone.now())
+        if promotion.redeem_until is not None:
+            expires_at = min(expires_at, promotion.redeem_until)
+    return CouponRound.objects.create(
+        promotion=promotion,
+        expires_at=expires_at,
+        quantity=quantity or promotion.total_quantity or 1000,
+    )
+
+
+def make_coupon(**kwargs):
+    """Coupon.objects.create와 같은 인자를 받고, round가 없으면 오늘 발급분(없으면 새로 만듦)에 연결한다.
+
+    expires_at을 주지 않으면 발급분의 expires_at을 쓴다.
+    """
+    promotion = kwargs['promotion']
+    coupon_round = kwargs.pop('round', None)
+    if coupon_round is None:
+        coupon_round = (
+            CouponRound.objects.filter(promotion=promotion, round_date=timezone.localdate()).first()
+            or make_round(promotion)
+        )
+    kwargs.setdefault('expires_at', coupon_round.expires_at)
+    return Coupon.objects.create(round=coupon_round, **kwargs)
 
 
 def logged_in_client(user):

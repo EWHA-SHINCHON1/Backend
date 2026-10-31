@@ -67,8 +67,9 @@ class Coupon(models.Model):
     """사용자에게 발급된 프로모션 쿠폰.
 
     - status는 저장하지 않고 get_status()로 계산합니다.
-    - expires_at은 발급 당시 Promotion.redeem_until을 복사해 명시적으로 저장합니다.
-      이후 Promotion의 사용기한이 바뀌어도 기존 쿠폰은 바뀌지 않습니다.
+    - 쿠폰은 발급분(CouponRound)에서 나옵니다. 같은 사용자는 발급분마다 한 장만 받을 수 있습니다.
+    - expires_at은 발급 당시 발급분의 expires_at을 복사해 명시적으로 저장합니다.
+      이후 발급분·프로모션의 값이 바뀌어도 기존 쿠폰은 바뀌지 않습니다.
     - 사용 PIN은 매장(Store) 공통 PIN으로 검증하므로 쿠폰에는 PIN 컬럼이 없습니다.
     """
 
@@ -83,7 +84,7 @@ class Coupon(models.Model):
         on_delete=models.PROTECT,
         related_name='coupons',
         verbose_name='사용자',
-        # UNIQUE(user, promotion) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
+        # UNIQUE(user, round) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
         db_index=False,
     )
     promotion = models.ForeignKey(
@@ -92,16 +93,13 @@ class Coupon(models.Model):
         related_name='coupons',
         verbose_name='프로모션',
     )
-    # 발급분 도입 전 쿠폰과 발급 로직 전환 전까지는 비어 있을 수 있습니다.
     round = models.ForeignKey(
         CouponRound,
         on_delete=models.PROTECT,
         related_name='coupons',
         verbose_name='발급분',
-        null=True,
-        blank=True,
     )
-    issued_at =models.DateTimeField('발급 시각', default=timezone.now)
+    issued_at = models.DateTimeField('발급 시각', default=timezone.now)
     expires_at = models.DateTimeField('사용 기한')
     used_at = models.DateTimeField('사용 시각', null=True, blank=True)
 
@@ -112,7 +110,7 @@ class Coupon(models.Model):
         verbose_name = '쿠폰'
         verbose_name_plural = '쿠폰'
         constraints = [
-            models.UniqueConstraint(fields=['user', 'promotion'], name='uniq_coupon_user_promotion'),
+            models.UniqueConstraint(fields=['user', 'round'], name='uniq_coupon_user_round'),
         ]
 
     def __str__(self):

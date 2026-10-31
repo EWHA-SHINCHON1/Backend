@@ -14,10 +14,13 @@ from coupons.models import Coupon
 from coupons.services import issue_coupon
 from coupons.tests.helpers import (
     csrf_client,
+    end_of_day,
     issue_url,
     logged_in_client,
+    make_coupon,
     make_non_coupon_promotion,
     make_promotion,
+    make_round,
     make_store,
     run_in_thread,
     wait_for_lock_waiter,
@@ -49,7 +52,7 @@ class CouponIssueTests(TestCase):
 
     # 정상 발급 / 재요청
 
-    def test_first_issue_returns_201_and_copies_redeem_until(self):
+    def test_first_issue_returns_201_and_copies_round_expires_at(self):
         response = self.post()
 
         self.assertEqual(response.status_code, 201)
@@ -62,11 +65,13 @@ class CouponIssueTests(TestCase):
         self.assertEqual(str(coupon.pk), body['coupon']['id'])
         self.assertEqual(coupon.user, self.user)
         self.assertEqual(coupon.promotion, self.promotion)
-        self.assertEqual(coupon.expires_at, self.promotion.redeem_until)
+        today_round = self.promotion.coupon_rounds.get()
+        self.assertEqual(coupon.round, today_round)
+        self.assertEqual(coupon.expires_at, today_round.expires_at)
         self.assertIsNone(coupon.used_at)
         # 응답 시각은 프로젝트 타임존(Asia/Seoul) 기준
         expires_at = datetime.strptime(body['coupon']['expires_at'], '%Y-%m-%dT%H:%M:%S%z')
-        self.assertEqual(expires_at, self.promotion.redeem_until)
+        self.assertEqual(expires_at, today_round.expires_at)
         self.assertTrue(body['coupon']['expires_at'].endswith('+0900'))
 
     def test_reissue_returns_200_with_same_coupon(self):
@@ -94,7 +99,7 @@ class CouponIssueTests(TestCase):
 
     def issue_existing(self, **kwargs):
         kwargs.setdefault('expires_at', self.promotion.redeem_until)
-        return Coupon.objects.create(user=self.user, promotion=self.promotion, **kwargs)
+        return make_coupon(user=self.user, promotion=self.promotion, **kwargs)
 
     def assert_returns_existing(self, coupon, expected_status):
         response = self.post()
@@ -112,10 +117,14 @@ class CouponIssueTests(TestCase):
         coupon = self.issue_existing(expires_at=timezone.now() - timedelta(seconds=1))
         self.assert_returns_existing(coupon, 'expired')
 
-    def test_existing_coupon_returned_after_promotion_ended(self):
-        coupon = self.issue_existing()
+    def test_previous_day_coupon_is_not_returned(self):
+        """이전 날짜 발급분의 쿠폰은 "이미 받은 쿠폰"으로 보지 않는다. (프로모션 종료 후에는 종료 오류)"""
+        self.issue_existing()
         with freeze(self.promotion.ends_at + timedelta(days=1)):
-            self.assert_returns_existing(coupon, 'available')
+            response = self.post()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['error']['code'], 'PROMOTION_ENDED')
+        self.assertEqual(Coupon.objects.filter(user=self.user).count(), 1)
 
     def test_existing_coupon_returned_after_unpublished(self):
         coupon = self.issue_existing()
@@ -124,7 +133,7 @@ class CouponIssueTests(TestCase):
 
     def test_existing_coupon_returned_after_sold_out(self):
         coupon = self.issue_existing()
-        Coupon.objects.create(
+        make_coupon(
             user=User.objects.create_user(username='u2'),
             promotion=self.promotion,
             expires_at=self.promotion.redeem_until,
@@ -191,7 +200,7 @@ class CouponIssueTests(TestCase):
             ),
             'sold_out': make_promotion(inactive, total_quantity=1),
         }
-        Coupon.objects.create(
+        make_coupon(
             user=User.objects.create_user(username='u2'),
             promotion=cases['sold_out'],
             expires_at=cases['sold_out'].redeem_until,
@@ -223,6 +232,7 @@ class CouponIssueTests(TestCase):
             self.assert_error(self.post(), 409, 'PROMOTION_NOT_ACTIVE')
 
     def test_starts_at_is_inclusive(self):
+        make_round(self.promotion, day=self.promotion.starts_at)
         with freeze(self.promotion.starts_at):
             response = self.post()
         self.assertEqual(response.status_code, 201)
@@ -233,12 +243,13 @@ class CouponIssueTests(TestCase):
             self.assert_error(self.post(), 409, 'PROMOTION_ENDED')
 
     def test_just_before_ends_at(self):
+        make_round(self.promotion, day=self.promotion.ends_at)
         with freeze(self.promotion.ends_at - timedelta(microseconds=1)):
             self.assertEqual(self.post().status_code, 201)
 
     def test_sold_out(self):
         for i in range(2):
-            Coupon.objects.create(
+            make_coupon(
                 user=User.objects.create_user(username=f'other{i}'),
                 promotion=self.promotion,
                 expires_at=self.promotion.redeem_until,
@@ -246,13 +257,13 @@ class CouponIssueTests(TestCase):
         self.assert_error(self.post(), 409, 'COUPON_SOLD_OUT')
 
     def test_used_and_expired_coupons_count_toward_quantity(self):
-        Coupon.objects.create(
+        make_coupon(
             user=User.objects.create_user(username='used'),
             promotion=self.promotion,
             expires_at=self.promotion.redeem_until,
             used_at=timezone.now(),
         )
-        Coupon.objects.create(
+        make_coupon(
             user=User.objects.create_user(username='expired'),
             promotion=self.promotion,
             expires_at=timezone.now() - timedelta(days=1),
@@ -260,7 +271,7 @@ class CouponIssueTests(TestCase):
         self.assert_error(self.post(), 409, 'COUPON_SOLD_OUT')
 
     def test_last_coupon_can_be_issued(self):
-        Coupon.objects.create(
+        make_coupon(
             user=User.objects.create_user(username='other'),
             promotion=self.promotion,
             expires_at=self.promotion.redeem_until,
@@ -270,6 +281,85 @@ class CouponIssueTests(TestCase):
 
     def test_promotion_id_must_be_integer(self):
         self.assertEqual(self.client.post('/api/v1/promotions/abc/coupons/', {}, format='json').status_code, 404)
+
+
+class CouponRoundIssueTests(TestCase):
+    """발급분(하루치 바구니) 기준 발급 규칙"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='u1')
+        self.client = logged_in_client(self.user)
+        self.promotion = make_promotion(with_round=False, total_quantity=100)
+        self.now = timezone.now().replace(microsecond=0)
+
+    def post(self, client=None):
+        return (client or self.client).post(issue_url(self.promotion.pk), {}, format='json')
+
+    def assert_sold_out(self, response):
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['error']['code'], 'COUPON_SOLD_OUT')
+
+    def other_user_coupon(self, coupon_round, name):
+        return make_coupon(
+            user=User.objects.create_user(username=name), promotion=self.promotion, round=coupon_round,
+        )
+
+    def test_no_round_today_is_sold_out(self):
+        self.assert_sold_out(self.post())
+        self.assertFalse(Coupon.objects.exists())
+
+    def test_tomorrow_round_is_not_open_today(self):
+        make_round(self.promotion, day=self.now + timedelta(days=1))
+        self.assert_sold_out(self.post())
+
+    def test_closed_round_is_sold_out(self):
+        coupon_round = make_round(self.promotion, expires_at=self.now + timedelta(hours=1))
+        with freeze(coupon_round.expires_at):
+            self.assert_sold_out(self.post())
+
+    def test_today_coupon_is_returned_even_after_round_closed(self):
+        coupon_round = make_round(self.promotion, expires_at=self.now + timedelta(minutes=1))
+        coupon_id = self.post().json()['coupon']['id']
+        with freeze(coupon_round.expires_at):
+            response = self.post()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['coupon']['id'], coupon_id)
+        self.assertEqual(response.json()['coupon']['status'], 'expired')
+
+    def test_round_quantity_limit(self):
+        coupon_round = make_round(self.promotion, quantity=1)
+        self.other_user_coupon(coupon_round, 'other')
+        self.assert_sold_out(self.post())
+
+    def test_promotion_total_quantity_caps_all_rounds(self):
+        Promotion.objects.filter(pk=self.promotion.pk).update(total_quantity=2)
+        yesterday = make_round(self.promotion, day=self.now - timedelta(days=1))
+        self.other_user_coupon(yesterday, 'a')
+        self.other_user_coupon(yesterday, 'b')
+        make_round(self.promotion, quantity=30)
+        self.assert_sold_out(self.post())
+
+    def test_unissued_quantity_is_not_carried_over(self):
+        """어제 30장 중 1장만 나갔어도 오늘 발급분 수량(1장)만 발급된다."""
+        yesterday = make_round(self.promotion, day=self.now - timedelta(days=1), quantity=30)
+        self.other_user_coupon(yesterday, 'a')
+        today = make_round(self.promotion, quantity=1)
+        self.assertEqual(self.post().status_code, 201)
+        self.assert_sold_out(self.post(logged_in_client(User.objects.create_user(username='b'))))
+        self.assertEqual(today.coupons.count(), 1)
+
+    def test_same_user_gets_new_coupon_next_day(self):
+        yesterday = make_round(self.promotion, day=self.now - timedelta(days=1))
+        old = make_coupon(user=self.user, promotion=self.promotion, round=yesterday)
+        today = make_round(self.promotion)
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 201)
+        coupon = Coupon.objects.get(pk=response.json()['coupon']['id'])
+        self.assertNotEqual(coupon.pk, old.pk)
+        self.assertEqual((coupon.round, coupon.expires_at), (today, today.expires_at))
+        self.assertEqual(Coupon.objects.filter(user=self.user, promotion=self.promotion).count(), 2)
 
 
 class CouponIssueConcurrencyTests(TransactionTestCase):
@@ -333,8 +423,11 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
         self.user = User.objects.create_user(username='u1')
         self.promotion = make_promotion(total_quantity=10, benefit='10% 할인', featured_rank=1)
 
-    def admin_post(self, promotion, **overrides):
-        """Admin 변경 폼에 현재 값 + overrides를 그대로 제출한다."""
+    def admin_post(self, promotion, rounds=(), **overrides):
+        """Admin 변경 폼에 현재 값 + overrides를 그대로 제출한다.
+
+        rounds: 새로 추가할 발급분 (expires_at, quantity) 목록. 기존 발급분은 보내지 않으므로 그대로 유지된다.
+        """
         client = APIClient()
         client.force_login(self.admin_user)
         values = {
@@ -364,13 +457,19 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
             local = timezone.localtime(values[name])
             data[f'{name}_0'] = local.strftime('%Y-%m-%d')
             data[f'{name}_1'] = local.strftime('%H:%M:%S')
-        # 쿠폰 발급분 인라인 관리 폼 (발급분 없음)
+        # 쿠폰 발급분 인라인 관리 폼
         data.update({
-            'coupon_rounds-TOTAL_FORMS': '0',
+            'coupon_rounds-TOTAL_FORMS': str(len(rounds)),
             'coupon_rounds-INITIAL_FORMS': '0',
             'coupon_rounds-MIN_NUM_FORMS': '0',
             'coupon_rounds-MAX_NUM_FORMS': '1000',
         })
+        for i, (expires_at, quantity) in enumerate(rounds):
+            local = timezone.localtime(expires_at)
+            data[f'coupon_rounds-{i}-promotion'] = str(promotion.pk)
+            data[f'coupon_rounds-{i}-quantity'] = str(quantity)
+            data[f'coupon_rounds-{i}-expires_at_0'] = local.strftime('%Y-%m-%d')
+            data[f'coupon_rounds-{i}-expires_at_1'] = local.strftime('%H:%M:%S')
         return client.post(reverse('admin:promotions_promotion_change', args=[promotion.pk]), data)
 
     def test_admin_change_waits_for_issue_and_is_rejected(self):
@@ -399,22 +498,24 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
         self.assertFalse(self.promotion.is_published)
         self.assertEqual(Coupon.objects.count(), 1)
 
-    def test_issue_waits_for_admin_change_and_uses_new_redeem_until(self):
-        """Admin 수정이 먼저 잠금을 잡으면 발급은 기다렸다가 수정된 사용 기한으로 발급한다."""
-        new_redeem_until = self.promotion.redeem_until + timedelta(days=7)
+    def test_issue_waits_for_admin_round_and_uses_its_expires_at(self):
+        """Admin이 먼저 잠금을 잡고 오늘 발급분을 추가하면 발급은 기다렸다가 새 발급분으로 발급한다."""
+        promotion = make_promotion(with_round=False, total_quantity=10, benefit='10% 할인', featured_rank=1)
+        round_expires_at = end_of_day(timezone.now())
         results = {}
         with transaction.atomic():
-            response = self.admin_post(self.promotion, redeem_until=new_redeem_until)
+            response = self.admin_post(promotion, rounds=[(round_expires_at, 30)])
             self.assertEqual(response.status_code, 302)
             thread = run_in_thread(
-                lambda: issue_coupon(user=self.user, promotion_id=self.promotion.pk), results, 'issue'
+                lambda: issue_coupon(user=self.user, promotion_id=promotion.pk), results, 'issue'
             )
             self.assertTrue(wait_for_lock_waiter(), '발급이 Promotion 잠금을 기다리지 않았습니다.')
         thread.join()
 
         coupon, created = results['issue']
         self.assertTrue(created)
-        self.assertEqual(coupon.expires_at, new_redeem_until)
+        self.assertEqual(coupon.round, promotion.coupon_rounds.get())
+        self.assertEqual(coupon.expires_at, round_expires_at)
 
     def test_issue_waits_for_admin_unpublish_and_is_rejected(self):
         results = {}

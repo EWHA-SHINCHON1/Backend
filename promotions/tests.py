@@ -11,6 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from coupons.models import Coupon, CouponRound
+from coupons.tests.helpers import make_coupon
 from promotions.admin import PromotionAdmin
 from promotions.models import Promotion, PromotionEvent
 from promotions.validators import validate_promotion_update
@@ -367,7 +368,7 @@ class PromotionAdminTests(TestCase):
         data[f'{field_name}_1'] = '' if local_value is None else local_value.strftime('%H:%M:%S')
 
     def issue_coupon(self, promotion):
-        return Coupon.objects.create(
+        return make_coupon(
             user=self.coupon_user,
             promotion=promotion,
             expires_at=promotion.redeem_until,

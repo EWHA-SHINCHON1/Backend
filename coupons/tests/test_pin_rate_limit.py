@@ -9,7 +9,7 @@ from django.utils import timezone
 from coupons import exceptions
 from coupons.models import Coupon, PinAttempt
 from coupons.services import PIN_MAX_FAILURES, use_coupon
-from coupons.tests.helpers import logged_in_client, make_promotion, make_store, run_in_thread
+from coupons.tests.helpers import logged_in_client, make_coupon, make_promotion, make_store, run_in_thread
 
 User = get_user_model()
 
@@ -43,7 +43,7 @@ class PinRateLimitTests(TestCase):
 
     def issue(self, user, store):
         promotion = make_promotion(store)
-        return Coupon.objects.create(user=user, promotion=promotion, expires_at=promotion.redeem_until)
+        return make_coupon(user=user, promotion=promotion, expires_at=promotion.redeem_until)
 
     def post(self, pin, coupon=None, client=None, at=None):
         coupon = coupon or self.coupon
@@ -189,7 +189,7 @@ class PinRateLimitConcurrencyTests(TransactionTestCase):
         store.save()
         self.store = store
         promotion = make_promotion(store)
-        self.coupon = Coupon.objects.create(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
+        self.coupon = make_coupon(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
 
     def run_concurrently(self, pins):
         results = {}

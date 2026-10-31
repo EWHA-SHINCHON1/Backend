@@ -10,6 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from coupons.models import Coupon
+from coupons.tests.helpers import make_coupon
 from promotions.models import Promotion, PromotionEvent, SavedPromotion
 from promotions.services.liner import (
     LINER_CHAT_COMPLETIONS_URL,
@@ -410,7 +411,7 @@ class LinerDraftAdminTests(TestCase):
     @patch('promotions.admin.generate_promotion_draft')
     def test_issued_coupon_blocks_existing_promotion_before_liner(self, mock_generate):
         promotion = self.make_promotion()
-        Coupon.objects.create(
+        make_coupon(
             user=self.coupon_user,
             promotion=promotion,
             expires_at=promotion.redeem_until,

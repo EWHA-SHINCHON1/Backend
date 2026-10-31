@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from coupons.models import Coupon
+from coupons.tests.helpers import make_coupon
 from promotions.models import Promotion
 from stores.models import Store
 
@@ -33,7 +34,7 @@ def make_promotion(**kwargs):
 
 def issue(user, promotion, **kwargs):
     """테스트용 발급. 실제 발급 API는 후속 작업이며, expires_at을 명시적으로 복사한다."""
-    return Coupon.objects.create(user=user, promotion=promotion, expires_at=promotion.redeem_until, **kwargs)
+    return make_coupon(user=user, promotion=promotion, expires_at=promotion.redeem_until, **kwargs)
 
 
 class CouponModelTests(TestCase):
@@ -61,7 +62,7 @@ class CouponModelTests(TestCase):
         for name in ('pin', 'status', 'redeemed_by'):
             self.assertNotIn(name, field_names)
 
-    def test_user_cannot_get_same_promotion_twice(self):
+    def test_user_cannot_get_same_round_twice(self):
         issue(self.user1, self.promotion)
         with self.assertRaises(IntegrityError), transaction.atomic():
             issue(self.user1, self.promotion)
