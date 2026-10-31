@@ -142,7 +142,9 @@ class KakaoLoginFlowTests(TestCase):
 
         token = client.cookies['csrftoken'].value
         self.assertEqual(client.post(LOGOUT_URL, HTTP_X_CSRFTOKEN=token).status_code, 204)
-        self.assertEqual(client.get(ME_URL).json(), {'id': None, 'nickname': None, 'is_authenticated': False})
+        body = client.get(ME_URL).json()
+        body.pop('csrf_token')
+        self.assertEqual(body, {'id': None, 'nickname': None, 'is_authenticated': False})
 
 
 class InputSerializer(serializers.Serializer):

@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from coupons.models import Coupon
+from coupons.tests.helpers import make_coupon, make_round
 from promotions.models import Promotion
 from stores.models import Store
 
@@ -33,7 +34,7 @@ def make_promotion(**kwargs):
 
 def issue(user, promotion, **kwargs):
     """테스트용 발급. 실제 발급 API는 후속 작업이며, expires_at을 명시적으로 복사한다."""
-    return Coupon.objects.create(user=user, promotion=promotion, expires_at=promotion.redeem_until, **kwargs)
+    return make_coupon(user=user, promotion=promotion, expires_at=promotion.redeem_until, **kwargs)
 
 
 class CouponModelTests(TestCase):
@@ -61,7 +62,7 @@ class CouponModelTests(TestCase):
         for name in ('pin', 'status', 'redeemed_by'):
             self.assertNotIn(name, field_names)
 
-    def test_user_cannot_get_same_promotion_twice(self):
+    def test_user_cannot_get_same_round_twice(self):
         issue(self.user1, self.promotion)
         with self.assertRaises(IntegrityError), transaction.atomic():
             issue(self.user1, self.promotion)
@@ -127,31 +128,36 @@ class CouponDeletePolicyTests(TestCase):
 
 
 class PromotionQuantityTests(TestCase):
-    """Coupon 연결 후 완성된 Promotion의 발급 수 기반 계산"""
+    """Coupon 연결 후 완성된 Promotion의 발급 수 기반 계산 (오늘 발급분 기준)"""
 
     def setUp(self):
         self.promotion = make_promotion(total_quantity=2)
+        make_round(self.promotion)
         self.users = [User.objects.create_user(username=f'u{i}') for i in range(3)]
+
+    def remaining(self):
+        return self.promotion.get_remaining_quantity(now=timezone.now())
 
     def test_issued_and_remaining_quantity(self):
         self.assertEqual(self.promotion.issued_count, 0)
-        self.assertEqual(self.promotion.remaining_quantity, 2)
+        self.assertEqual(self.remaining(), 2)
         issue(self.users[0], self.promotion)
         self.assertEqual(self.promotion.issued_count, 1)
-        self.assertEqual(self.promotion.remaining_quantity, 1)
+        self.assertEqual(self.remaining(), 1)
 
-    def test_status_uses_coupon_count_when_not_given(self):
-        self.assertEqual(self.promotion.get_status(now=NOW), 'active')
+    def test_status_uses_coupon_count_when_not_annotated(self):
+        now = timezone.now()
+        self.assertEqual(self.promotion.get_status(now=now), 'active')
         issue(self.users[0], self.promotion)
-        self.assertEqual(self.promotion.get_status(now=NOW), 'active')
+        self.assertEqual(self.promotion.get_status(now=now), 'active')
         issue(self.users[1], self.promotion)
-        self.assertEqual(self.promotion.get_status(now=NOW), 'sold_out')
-        self.assertEqual(self.promotion.remaining_quantity, 0)
+        self.assertEqual(self.promotion.get_status(now=now), 'sold_out')
+        self.assertEqual(self.remaining(), 0)
 
     def test_remaining_quantity_never_negative(self):
         for user in self.users:  # 수량 검사는 발급 API 몫이므로 모델은 초과 생성을 막지 않음
             issue(user, self.promotion)
-        self.assertEqual(self.promotion.remaining_quantity, 0)
+        self.assertEqual(self.remaining(), 0)
 
     def test_existing_coupon_usable_after_issue_period_ends(self):
         coupon = issue(self.users[0], self.promotion)

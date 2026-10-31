@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from coupons.models import Coupon
-from coupons.tests.helpers import logged_in_client, make_promotion, make_store
+from coupons.tests.helpers import logged_in_client, make_coupon, make_promotion, make_store
 
 User = get_user_model()
 
@@ -36,7 +36,7 @@ class MyCouponListTests(TestCase):
     def issue(self, user=None, promotion=None, issued_at=None, **kwargs):
         promotion = promotion or make_promotion(self.store, benefit='아메리카노 1잔', terms='1인 1회')
         kwargs.setdefault('expires_at', promotion.redeem_until)
-        return Coupon.objects.create(
+        return make_coupon(
             user=user or self.user,
             promotion=promotion,
             issued_at=issued_at or self.now,

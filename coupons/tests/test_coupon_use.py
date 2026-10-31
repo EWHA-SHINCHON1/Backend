@@ -5,7 +5,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from coupons.models import Coupon
-from coupons.tests.helpers import csrf_client, logged_in_client, make_promotion, make_store
+from coupons.tests.helpers import csrf_client, logged_in_client, make_coupon, make_promotion, make_store
 
 User = get_user_model()
 
@@ -27,7 +27,7 @@ class CouponUseTestMixin:
         self.coupon = self.issue()
 
     def issue(self, user=None):
-        return Coupon.objects.create(
+        return make_coupon(
             user=user or self.user,
             promotion=self.promotion,
             expires_at=self.promotion.redeem_until,

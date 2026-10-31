@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -17,12 +18,58 @@ class CouponQuerySet(models.QuerySet):
         raise ValueError(f'Unknown coupon status: {status!r}')
 
 
+class CouponRound(models.Model):
+    """관리자가 Admin에서 직접 여는 쿠폰 발급분(하루치 쿠폰 바구니). 자동으로 만들지 않습니다.
+
+    - round_date는 expires_at의 Asia/Seoul 날짜로 저장 시 계산합니다. 관리자가 입력하지 않습니다.
+    - 한 프로모션에 같은 날짜의 발급분은 하나만 둡니다.
+    - 발급분은 round_date 당일에만 열리고, expires_at이 지나면 닫힙니다. 남은 수량은 이월하지 않습니다.
+    - 쿠폰이 연결된 발급분은 삭제할 수 없습니다. (Coupon.round = PROTECT)
+    """
+
+    promotion = models.ForeignKey(
+        'promotions.Promotion',
+        on_delete=models.PROTECT,
+        related_name='coupon_rounds',
+        verbose_name='프로모션',
+    )
+    quantity = models.PositiveIntegerField('발급 수량', validators=[MinValueValidator(1)])
+    expires_at = models.DateTimeField('쿠폰 사용 마감')
+    round_date = models.DateField('발급일', editable=False)
+    created_at = models.DateTimeField('생성 시각', auto_now_add=True)
+
+    class Meta:
+        db_table = 'coupon_rounds'
+        verbose_name = '쿠폰 발급분'
+        verbose_name_plural = '쿠폰 발급분'
+        ordering = ['round_date', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['promotion', 'round_date'],
+                name='uniq_coupon_round_promotion_date',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name='coupon_round_quantity_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.promotion_id} {self.round_date}'
+
+    def save(self, *args, **kwargs):
+        if self.expires_at is not None:
+            self.round_date = timezone.localdate(self.expires_at)
+        super().save(*args, **kwargs)
+
+
 class Coupon(models.Model):
     """사용자에게 발급된 프로모션 쿠폰.
 
     - status는 저장하지 않고 get_status()로 계산합니다.
-    - expires_at은 발급 당시 Promotion.redeem_until을 복사해 명시적으로 저장합니다.
-      이후 Promotion의 사용기한이 바뀌어도 기존 쿠폰은 바뀌지 않습니다.
+    - 쿠폰은 발급분(CouponRound)에서 나옵니다. 같은 사용자는 발급분마다 한 장만 받을 수 있습니다.
+    - expires_at은 발급 당시 발급분의 expires_at을 복사해 명시적으로 저장합니다.
+      이후 발급분·프로모션의 값이 바뀌어도 기존 쿠폰은 바뀌지 않습니다.
     - 사용 PIN은 매장(Store) 공통 PIN으로 검증하므로 쿠폰에는 PIN 컬럼이 없습니다.
     """
 
@@ -37,7 +84,7 @@ class Coupon(models.Model):
         on_delete=models.PROTECT,
         related_name='coupons',
         verbose_name='사용자',
-        # UNIQUE(user, promotion) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
+        # UNIQUE(user, round) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
         db_index=False,
     )
     promotion = models.ForeignKey(
@@ -45,6 +92,12 @@ class Coupon(models.Model):
         on_delete=models.PROTECT,
         related_name='coupons',
         verbose_name='프로모션',
+    )
+    round = models.ForeignKey(
+        CouponRound,
+        on_delete=models.PROTECT,
+        related_name='coupons',
+        verbose_name='발급분',
     )
     issued_at = models.DateTimeField('발급 시각', default=timezone.now)
     expires_at = models.DateTimeField('사용 기한')
@@ -57,7 +110,7 @@ class Coupon(models.Model):
         verbose_name = '쿠폰'
         verbose_name_plural = '쿠폰'
         constraints = [
-            models.UniqueConstraint(fields=['user', 'promotion'], name='uniq_coupon_user_promotion'),
+            models.UniqueConstraint(fields=['user', 'round'], name='uniq_coupon_user_round'),
         ]
 
     def __str__(self):

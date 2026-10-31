@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from coupons import exceptions
-from coupons.models import Coupon, PinAttempt
+from coupons.models import Coupon, CouponRound, PinAttempt
 from promotions.models import Promotion
 
 # ASCII 숫자 4자리만 허용합니다. (\d는 다른 문자권의 숫자도 허용하므로 쓰지 않음)
@@ -21,13 +21,16 @@ PIN_LOCK_DURATION = timedelta(minutes=10)
 
 @transaction.atomic
 def issue_coupon(*, user, promotion_id):
-    """쿠폰을 발급하고 (coupon, created)를 돌려줍니다.
+    """오늘 발급분(CouponRound)에서 쿠폰을 발급하고 (coupon, created)를 돌려줍니다.
 
-    - Promotion 행을 먼저 잠가 같은 프로모션의 발급 요청과 Admin 수정을 한 줄로 세웁니다.
+    - Promotion 행을 먼저 잠가 같은 프로모션의 발급 요청과 Admin 수정(발급분 포함)을 한 줄로 세웁니다.
       (Admin 폼도 같은 행을 select_for_update로 잠근 뒤 발급 수를 셉니다.)
-    - 이미 받은 쿠폰이 있으면 공개·매장 운영 여부·기간·수량과 관계없이 기존 쿠폰을 돌려줍니다.
+    - 오늘(Asia/Seoul) 발급분에서 이미 받은 쿠폰이 있으면 공개·매장 운영 여부·기간·수량·마감과 관계없이
+      그 쿠폰을 돌려줍니다. 이전 날짜 발급분의 쿠폰은 보지 않으므로 같은 사용자도 매일 새로 받을 수 있습니다.
     - 비공개 프로모션과 비활성 매장(Store.is_active=False)의 프로모션은 공개 API에서 숨기므로
       신규 발급도 PROMOTION_NOT_FOUND(404)로 막습니다.
+    - 오늘 발급분이 없거나 마감됐거나, 발급분 수량 또는 프로모션 전체 상한(total_quantity)에 도달하면
+      COUPON_SOLD_OUT입니다. 남은 수량은 다음 발급분으로 이월하지 않습니다.
     - 기준 시각과 발급 수는 잠금을 얻은 뒤에 구합니다.
     """
     try:
@@ -35,11 +38,16 @@ def issue_coupon(*, user, promotion_id):
     except Promotion.DoesNotExist:
         raise exceptions.PromotionNotFound
 
-    coupon = Coupon.objects.filter(user=user, promotion=promotion).first()
-    if coupon is not None:
-        return coupon, False
-
     now = timezone.now()
+    today_round = CouponRound.objects.filter(
+        promotion=promotion,
+        round_date=timezone.localdate(now),
+    ).first()
+    if today_round is not None:
+        coupon = Coupon.objects.filter(user=user, round=today_round).first()
+        if coupon is not None:
+            return coupon, False
+
     # 비공개 프로모션·비활성 매장은 다른 조건보다 먼저 404로 처리해 유형·기간·수량을 드러내지 않습니다.
     # (공개 API의 노출 조건 is_published=True, store__is_active=True와 맞춤)
     if not promotion.is_published or not promotion.store.is_active:
@@ -50,15 +58,20 @@ def issue_coupon(*, user, promotion_id):
         raise exceptions.PromotionNotActive
     if now >= promotion.ends_at:
         raise exceptions.PromotionEnded
-    # 사용·만료 여부와 관계없이 발급된 모든 쿠폰을 셉니다.
+    if today_round is None or now >= today_round.expires_at:
+        raise exceptions.CouponSoldOut
+    # 사용·만료 여부와 관계없이 발급된 쿠폰을 셉니다. (발급분 수량, 프로모션 전체 상한)
+    if today_round.coupons.count() >= today_round.quantity:
+        raise exceptions.CouponSoldOut
     if promotion.coupons.count() >= promotion.total_quantity:
         raise exceptions.CouponSoldOut
 
     coupon = Coupon.objects.create(
         user=user,
         promotion=promotion,
+        round=today_round,
         issued_at=now,
-        expires_at=promotion.redeem_until,
+        expires_at=today_round.expires_at,
     )
     return coupon, True
 
