@@ -2,12 +2,14 @@ from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count, OuterRef, Q, Subquery, Sum
+from django.db.models.functions import Coalesce
 from django.http import HttpResponseNotAllowed, JsonResponse
 from django.forms.models import BaseInlineFormSet
 from django.urls import path, reverse
 from django.utils import timezone
 
-from coupons.models import CouponRound
+from coupons.models import Coupon, CouponRound
 from .models import Promotion
 from .services import LinerDraftError, generate_promotion_draft
 from .validators import validate_promotion_configuration, validate_promotion_update
@@ -185,14 +187,129 @@ class CouponRoundInlineFormSet(BaseInlineFormSet):
             )
 
 
+def _rate(numerator, denominator):
+    """사용률(%) 표시. 분모가 0이면 0.0%"""
+    return f'{numerator / denominator * 100:.1f}%' if denominator else '0.0%'
+
+
+def _coupon_stat_annotations(now):
+    """프로모션 목록용 쿠폰 통계. 발급분 합계와 쿠폰 수를 각각 Subquery로 구해 JOIN 중복 집계를 피합니다.
+
+    - 뿌린 양: 발급분 quantity 합계 / 가져간 양: with_coupon_state()의 coupon_issued_count
+    - 실제 사용·미사용 만료·사용 대기: 쿠폰의 used_at·expires_at 기준 (가져간 양 = 세 값의 합)
+    - 안 가져가고 소멸: 마감된 발급분의 quantity 합계 - 그 발급분들에서 나간 쿠폰 수
+      (발급분 수량을 넘겨 발급하지 않고, Admin도 발급 수 미만으로 줄일 수 없으므로 발급분별로 음수가 되지 않음)
+    """
+
+    def coupon_count(**filters):
+        coupons = (
+            Coupon.objects.filter(promotion=OuterRef('pk'), **filters)
+            .order_by()
+            .values('promotion')
+            .annotate(count=Count('pk'))
+            .values('count')
+        )
+        return Coalesce(Subquery(coupons), 0)
+
+    def round_quantity(**filters):
+        rounds = (
+            CouponRound.objects.filter(promotion=OuterRef('pk'), **filters)
+            .order_by()
+            .values('promotion')
+            .annotate(total=Sum('quantity'))
+            .values('total')
+        )
+        return Coalesce(Subquery(rounds), 0)
+
+    return {
+        'stat_distributed': round_quantity(),
+        'stat_used': coupon_count(used_at__isnull=False),
+        'stat_expired': coupon_count(used_at__isnull=True, expires_at__lte=now),
+        'stat_waiting': coupon_count(used_at__isnull=True, expires_at__gt=now),
+        'stat_closed_quantity': round_quantity(expires_at__lte=now),
+        'stat_closed_issued': coupon_count(round__expires_at__lte=now),
+    }
+
+
 class CouponRoundInline(admin.TabularInline):
     model = CouponRound
     formset = CouponRoundInlineFormSet
-    fields = ('expires_at', 'round_date', 'quantity')
-    readonly_fields = ('round_date',)
+    fields = (
+        'expires_at',
+        'round_date',
+        'quantity',
+        'issued_count',
+        'used_count',
+        'expired_count',
+        'waiting_count',
+        'lapsed_count',
+        'usage_rate_of_issued',
+        'usage_rate_of_quantity',
+    )
+    readonly_fields = fields[1:2] + fields[3:]
     extra = 0
     verbose_name = '쿠폰 발급분'
     verbose_name_plural = '쿠폰 발급분 (하루에 하나, 사용 마감 날짜 00:00부터 마감 시각까지 발급)'
+
+    def get_queryset(self, request):
+        self.stats_now = timezone.now()
+        return super().get_queryset(request).annotate(
+            stat_issued=Count('coupons'),
+            stat_used=Count('coupons', filter=Q(coupons__used_at__isnull=False)),
+            stat_expired=Count(
+                'coupons',
+                filter=Q(coupons__used_at__isnull=True, coupons__expires_at__lte=self.stats_now),
+            ),
+            stat_waiting=Count(
+                'coupons',
+                filter=Q(coupons__used_at__isnull=True, coupons__expires_at__gt=self.stats_now),
+            ),
+        )
+
+    @staticmethod
+    def _stat(obj, name):
+        """저장 전 새 행이거나 통계가 붙지 않은 객체는 None"""
+        if obj is None or obj.pk is None:
+            return None
+        return getattr(obj, name, None)
+
+    @admin.display(description='가져간 양')
+    def issued_count(self, obj):
+        value = self._stat(obj, 'stat_issued')
+        return '-' if value is None else value
+
+    @admin.display(description='실제 사용')
+    def used_count(self, obj):
+        value = self._stat(obj, 'stat_used')
+        return '-' if value is None else value
+
+    @admin.display(description='미사용 만료')
+    def expired_count(self, obj):
+        value = self._stat(obj, 'stat_expired')
+        return '-' if value is None else value
+
+    @admin.display(description='사용 대기')
+    def waiting_count(self, obj):
+        value = self._stat(obj, 'stat_waiting')
+        return '-' if value is None else value
+
+    @admin.display(description='안 가져가고 소멸')
+    def lapsed_count(self, obj):
+        issued = self._stat(obj, 'stat_issued')
+        if issued is None or obj.expires_at > getattr(self, 'stats_now', timezone.now()):
+            return '-'
+        return max(obj.quantity - issued, 0)
+
+    @admin.display(description='사용률(받은 대비)')
+    def usage_rate_of_issued(self, obj):
+        issued = self._stat(obj, 'stat_issued')
+        return '-' if issued is None else _rate(obj.stat_used, issued)
+
+    @admin.display(description='사용률(뿌린 대비)')
+    def usage_rate_of_quantity(self, obj):
+        if self._stat(obj, 'stat_used') is None:
+            return '-'
+        return _rate(obj.stat_used, obj.quantity)
 
 
 def _draft_json(data, *, status=200):
@@ -216,6 +333,14 @@ class PromotionAdmin(admin.ModelAdmin):
         'ends_at',
         'is_published',
         'featured_rank',
+        'distributed_count',
+        'issued_count',
+        'used_count',
+        'expired_count',
+        'waiting_count',
+        'lapsed_count',
+        'usage_rate_of_issued',
+        'usage_rate_of_distributed',
     )
     search_fields = ('title', 'store__name')
     list_filter = ('store', 'requires_coupon', 'is_published')
@@ -268,7 +393,12 @@ class PromotionAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        return super().get_queryset(request).with_coupon_state(timezone.now())
+        now = timezone.now()
+        return (
+            super().get_queryset(request)
+            .with_coupon_state(now)
+            .annotate(**_coupon_stat_annotations(now))
+        )
 
     def get_urls(self):
         custom_urls = [
@@ -390,3 +520,41 @@ class PromotionAdmin(admin.ModelAdmin):
     def current_status(self, obj):
         status = obj.get_status()
         return Promotion.Status(status).label
+
+    # 쿠폰 통계 (행사 전체 누적). 비쿠폰형은 '-'
+
+    @staticmethod
+    def _coupon_stat(obj, value):
+        return value if obj.requires_coupon else '-'
+
+    @admin.display(description='뿌린 양')
+    def distributed_count(self, obj):
+        return self._coupon_stat(obj, obj.stat_distributed)
+
+    @admin.display(description='가져간 양')
+    def issued_count(self, obj):
+        return self._coupon_stat(obj, obj.coupon_issued_count)
+
+    @admin.display(description='실제 사용')
+    def used_count(self, obj):
+        return self._coupon_stat(obj, obj.stat_used)
+
+    @admin.display(description='미사용 만료')
+    def expired_count(self, obj):
+        return self._coupon_stat(obj, obj.stat_expired)
+
+    @admin.display(description='사용 대기')
+    def waiting_count(self, obj):
+        return self._coupon_stat(obj, obj.stat_waiting)
+
+    @admin.display(description='안 가져가고 소멸')
+    def lapsed_count(self, obj):
+        return self._coupon_stat(obj, max(obj.stat_closed_quantity - obj.stat_closed_issued, 0))
+
+    @admin.display(description='사용률(받은 대비)')
+    def usage_rate_of_issued(self, obj):
+        return self._coupon_stat(obj, _rate(obj.stat_used, obj.coupon_issued_count))
+
+    @admin.display(description='사용률(뿌린 대비)')
+    def usage_rate_of_distributed(self, obj):
+        return self._coupon_stat(obj, _rate(obj.stat_used, obj.stat_distributed))

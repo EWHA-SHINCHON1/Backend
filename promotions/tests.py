@@ -6,13 +6,13 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from coupons.models import Coupon, CouponRound
 from coupons.tests.helpers import make_coupon, make_round
-from promotions.admin import PromotionAdmin
+from promotions.admin import CouponRoundInline, PromotionAdmin
 from promotions.models import Promotion, PromotionEvent
 from promotions.validators import validate_promotion_update
 from stores.models import Store
@@ -756,6 +756,112 @@ class CouponRoundAdminTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.promotion.refresh_from_db()
         self.assertEqual(self.promotion.featured_rank, 5)
+
+
+class PromotionAdminCouponStatsTests(TestCase):
+    """Admin 프로모션 목록·발급분 인라인의 쿠폰 통계"""
+
+    def setUp(self):
+        self.now = timezone.now().replace(microsecond=0)
+        self.promotion = make_promotion(make_store(), total_quantity=1000)
+        # 어제 발급분(마감): 30장 중 5장 발급 → 3장 사용, 2장 미사용 만료, 25장 소멸
+        self.yesterday = make_round(self.promotion, day=self.now - timedelta(days=1), quantity=30)
+        # 오늘 발급분(진행 중): 30장 중 3장 발급 → 1장 사용, 2장 사용 대기
+        self.today = make_round(self.promotion, expires_at=self.now + timedelta(hours=1), quantity=30)
+        for i in range(5):
+            self.coupon(self.yesterday, f'y{i}', used=i < 3)
+        for i in range(3):
+            self.coupon(self.today, f't{i}', used=i < 1)
+        self.model_admin = PromotionAdmin(Promotion, admin.site)
+
+    def coupon(self, coupon_round, name, used):
+        return make_coupon(
+            user=User.objects.create_user(username=name),
+            promotion=self.promotion,
+            round=coupon_round,
+            used_at=self.now - timedelta(minutes=1) if used else None,
+        )
+
+    def list_stats(self, promotion):
+        names = (
+            'distributed_count', 'issued_count', 'used_count', 'expired_count', 'waiting_count',
+            'lapsed_count', 'usage_rate_of_issued', 'usage_rate_of_distributed',
+        )
+        listed = self.model_admin.get_queryset(request=None).get(pk=promotion.pk)
+        return {name: getattr(self.model_admin, name)(listed) for name in names}
+
+    def test_promotion_list_stats(self):
+        with self.assertNumQueries(1):
+            stats = self.list_stats(self.promotion)
+
+        self.assertEqual(stats, {
+            'distributed_count': 60,  # 발급분 2개 × 30 (쿠폰 수만큼 부풀지 않음)
+            'issued_count': 8,
+            'used_count': 4,
+            'expired_count': 2,
+            'waiting_count': 2,
+            'lapsed_count': 25,  # 마감된 어제 발급분의 남은 수량만
+            'usage_rate_of_issued': '50.0%',  # 4 / 8
+            'usage_rate_of_distributed': '6.7%',  # 4 / 60
+        })
+        self.assertEqual(
+            stats['issued_count'],
+            stats['used_count'] + stats['expired_count'] + stats['waiting_count'],
+        )
+
+    def test_promotion_without_rounds_and_non_coupon(self):
+        empty = make_promotion(make_store())
+        self.assertEqual(self.list_stats(empty), {
+            'distributed_count': 0,
+            'issued_count': 0,
+            'used_count': 0,
+            'expired_count': 0,
+            'waiting_count': 0,
+            'lapsed_count': 0,
+            'usage_rate_of_issued': '0.0%',
+            'usage_rate_of_distributed': '0.0%',
+        })
+        non_coupon = make_non_coupon_promotion(make_store())
+        self.assertEqual(set(self.list_stats(non_coupon).values()), {'-'})
+
+    def test_round_inline_stats(self):
+        inline = CouponRoundInline(Promotion, admin.site)
+        request = RequestFactory().get('/')
+        request.user = User.objects.create_superuser(
+            username='inline-admin', password='admin-password', email='inline@example.com',
+        )
+        rounds = {
+            coupon_round.pk: coupon_round
+            for coupon_round in inline.get_queryset(request).filter(promotion=self.promotion)
+        }
+
+        def row(coupon_round):
+            obj = rounds[coupon_round.pk]
+            return (
+                inline.issued_count(obj), inline.used_count(obj), inline.expired_count(obj),
+                inline.waiting_count(obj), inline.lapsed_count(obj),
+                inline.usage_rate_of_issued(obj), inline.usage_rate_of_quantity(obj),
+            )
+
+        self.assertEqual(row(self.yesterday), (5, 3, 2, 0, 25, '60.0%', '10.0%'))
+        self.assertEqual(row(self.today), (3, 1, 0, 2, '-', '33.3%', '3.3%'))
+        new_row = CouponRound(promotion=self.promotion, quantity=10)
+        self.assertEqual(inline.issued_count(new_row), '-')
+        self.assertEqual(inline.lapsed_count(new_row), '-')
+
+    def test_change_page_renders_stats(self):
+        self.client.force_login(User.objects.create_superuser(
+            username='stats-admin', password='admin-password', email='stats@example.com',
+        ))
+        response = self.client.get(reverse('admin:promotions_promotion_change', args=[self.promotion.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '안 가져가고 소멸')
+        self.assertContains(response, '60.0%')
+
+        response = self.client.get(reverse('admin:promotions_promotion_changelist'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '뿌린 양')
+        self.assertContains(response, '6.7%')
 
 
 class PromotionEventTests(TestCase):
