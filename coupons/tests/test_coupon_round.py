@@ -89,10 +89,16 @@ class BackfillCouponRoundMigrationTests(TransactionTestCase):
     before = [('coupons', '0003_coupon_round')]
     after = [('coupons', '0004_backfill_coupon_round')]
 
+    @staticmethod
+    def state_targets(executor, coupons_target):
+        """coupons만 지정한 마이그레이션으로 두고 다른 앱은 최신 상태로 둔 모델 상태 기준."""
+        others = [node for node in executor.loader.graph.leaf_nodes() if node[0] != 'coupons']
+        return others + coupons_target
+
     def setUp(self):
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
-        apps = executor.loader.project_state(self.before).apps
+        apps = executor.loader.project_state(self.state_targets(executor, self.before)).apps
 
         Store = apps.get_model('stores', 'Store')
         Promotion = apps.get_model('promotions', 'Promotion')
@@ -130,7 +136,7 @@ class BackfillCouponRoundMigrationTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
         executor.migrate(self.after)
-        apps = executor.loader.project_state(self.after).apps
+        apps = executor.loader.project_state(self.state_targets(executor, self.after)).apps
         NewRound = apps.get_model('coupons', 'CouponRound')
         NewCoupon = apps.get_model('coupons', 'Coupon')
 
@@ -150,6 +156,6 @@ class BackfillCouponRoundMigrationTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
         executor.migrate(self.before)
-        apps = executor.loader.project_state(self.before).apps
+        apps = executor.loader.project_state(self.state_targets(executor, self.before)).apps
         self.assertFalse(apps.get_model('coupons', 'CouponRound').objects.exists())
         self.assertEqual(apps.get_model('coupons', 'Coupon').objects.filter(round__isnull=True).count(), 3)

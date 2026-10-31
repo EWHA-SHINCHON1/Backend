@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -32,7 +33,7 @@ class CouponRound(models.Model):
         related_name='coupon_rounds',
         verbose_name='프로모션',
     )
-    quantity = models.PositiveIntegerField('발급 수량')
+    quantity = models.PositiveIntegerField('발급 수량', validators=[MinValueValidator(1)])
     expires_at = models.DateTimeField('쿠폰 사용 마감')
     round_date = models.DateField('발급일', editable=False)
     created_at = models.DateTimeField('생성 시각', auto_now_add=True)

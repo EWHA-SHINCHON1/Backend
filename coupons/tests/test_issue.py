@@ -364,6 +364,13 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
             local = timezone.localtime(values[name])
             data[f'{name}_0'] = local.strftime('%Y-%m-%d')
             data[f'{name}_1'] = local.strftime('%H:%M:%S')
+        # 쿠폰 발급분 인라인 관리 폼 (발급분 없음)
+        data.update({
+            'coupon_rounds-TOTAL_FORMS': '0',
+            'coupon_rounds-INITIAL_FORMS': '0',
+            'coupon_rounds-MIN_NUM_FORMS': '0',
+            'coupon_rounds-MAX_NUM_FORMS': '1000',
+        })
         return client.post(reverse('admin:promotions_promotion_change', args=[promotion.pk]), data)
 
     def test_admin_change_waits_for_issue_and_is_rejected(self):
