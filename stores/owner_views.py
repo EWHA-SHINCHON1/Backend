@@ -30,7 +30,7 @@ class OwnerDashboardView(OwnerAPIView):
         now = timezone.now()
         promotions = (
             Promotion.objects.filter(store=request.user.store)
-            .annotate(owner_issued_count=Count('coupons'))
+            .with_coupon_state(now)
             .order_by('-created_at', '-id')
         )
         return Response({

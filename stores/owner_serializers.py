@@ -38,10 +38,7 @@ class OwnerDashboardPromotionSerializer(serializers.ModelSerializer):
         )
 
     def get_status(self, promotion):
-        return promotion.get_status(
-            issued_count=promotion.owner_issued_count,
-            now=self.context['now'],
-        )
+        return promotion.get_status(now=self.context['now'])
 
     def get_period_status(self, promotion):
         return get_period_status(promotion, self.context['now'])

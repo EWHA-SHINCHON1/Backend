@@ -2,7 +2,6 @@ from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count
 from django.http import HttpResponseNotAllowed, JsonResponse
 from django.forms.models import BaseInlineFormSet
 from django.urls import path, reverse
@@ -269,7 +268,7 @@ class PromotionAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        return super().get_queryset(request).annotate(admin_issued_count=Count('coupons'))
+        return super().get_queryset(request).with_coupon_state(timezone.now())
 
     def get_urls(self):
         custom_urls = [
@@ -389,5 +388,5 @@ class PromotionAdmin(admin.ModelAdmin):
 
     @admin.display(description='현재 상태')
     def current_status(self, obj):
-        status = obj.get_status(issued_count=getattr(obj, 'admin_issued_count', None))
+        status = obj.get_status()
         return Promotion.Status(status).label

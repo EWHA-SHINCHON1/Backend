@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from coupons.models import Coupon
-from coupons.tests.helpers import make_coupon
+from coupons.tests.helpers import make_coupon, make_round
 from promotions.models import Promotion
 from stores.models import Store, StoreMenu
 
@@ -33,7 +33,8 @@ class PromotionPublicAPITestBase(TestCase):
             naver_url='https://example.com/naver',
         )
 
-    def make_promotion(self, **kwargs):
+    def make_promotion(self, with_round=True, **kwargs):
+        """쿠폰형이면 기본으로 오늘 발급분(수량 = total_quantity)을 함께 만든다."""
         data = {
             'store': self.store,
             'title': '휘낭시에 할인',
@@ -49,7 +50,10 @@ class PromotionPublicAPITestBase(TestCase):
             'is_published': True,
         }
         data.update(kwargs)
-        return Promotion.objects.create(**data)
+        promotion = Promotion.objects.create(**data)
+        if with_round and promotion.requires_coupon:
+            make_round(promotion)
+        return promotion
 
     def make_non_coupon_promotion(self, **kwargs):
         kwargs.setdefault('requires_coupon', False)
@@ -399,6 +403,44 @@ class PromotionPublicDetailAPITests(PromotionPublicAPITestBase):
         self.assertEqual(
             self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(coupon.id),
         )
+
+    def test_yesterday_coupon_is_not_my_coupon_today(self):
+        """오늘 발급분에서 받은 쿠폰만 my_coupon_id. 어제 쿠폰만 있으면 null이라 오늘 다시 받을 수 있다."""
+        promotion = self.make_promotion(with_round=False)
+        user = User.objects.create_user(username='daily')
+        yesterday = make_round(promotion, day=self.now - timedelta(days=1))
+        self.issue(promotion, user, round=yesterday)
+        self.client.force_login(user)
+
+        self.assertIsNone(self.client.get(self.url(promotion.id)).json()['my_coupon_id'])
+
+        today_coupon = self.issue(promotion, user, round=make_round(promotion))
+        self.assertEqual(
+            self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(today_coupon.id),
+        )
+
+    def test_coupon_fields_follow_today_round(self):
+        """API 필드는 그대로, 값만 오늘 발급분 기준."""
+        promotion = self.make_promotion(with_round=False, total_quantity=100)
+        make_round(promotion, day=self.now - timedelta(days=1), quantity=20)
+
+        body = self.client.get(self.url(promotion.id)).json()
+        self.assertEqual(body['status'], 'sold_out')
+        self.assertEqual(body['total_quantity'], 20)  # 오늘 발급분이 없으면 가장 최근 발급분 수량
+        self.assertEqual(body['remaining_quantity'], 0)
+        self.assertEqual(
+            datetime.fromisoformat(body['redeem_until']), promotion.redeem_until,
+        )  # 오늘 발급분이 없으면 프로모션의 최종 사용 한도
+
+        today = make_round(promotion, expires_at=self.now + timedelta(hours=1), quantity=30)
+        self.issue(promotion, round=today)
+
+        body = self.client.get(self.url(promotion.id)).json()
+        self.assertEqual(body['status'], 'active')
+        self.assertEqual(body['total_quantity'], 30)
+        self.assertEqual(body['remaining_quantity'], 29)
+        self.assertEqual(datetime.fromisoformat(body['redeem_until']), today.expires_at)
+        self.assertIn('+09:00', body['redeem_until'])
 
     def test_non_coupon_detail_has_no_coupon_id(self):
         promotion = self.make_non_coupon_promotion()

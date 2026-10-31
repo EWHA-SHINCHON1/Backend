@@ -52,8 +52,13 @@ class PromotionStoreDetailSerializer(serializers.ModelSerializer):
 class PromotionPublicListSerializer(serializers.ModelSerializer):
     starts_at = serializers.DateTimeField(format='iso-8601', read_only=True)
     ends_at = serializers.DateTimeField(format='iso-8601', read_only=True)
-    redeem_until = serializers.DateTimeField(format='iso-8601', allow_null=True, read_only=True)
+    # 쿠폰형은 오늘(Asia/Seoul) 발급분 기준 값입니다. 필드 이름과 형식은 발급분 도입 전과 같습니다.
+    # - redeem_until: 오늘 발급분의 사용 마감 (없으면 프로모션의 최종 사용 한도)
+    # - total_quantity: 오늘 발급분 수량 (없으면 가장 최근 발급분 수량, 발급분이 없으면 0)
+    # - remaining_quantity: 오늘 발급분에서 지금 더 받을 수 있는 수량 (닫혔거나 없으면 0)
+    redeem_until = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    total_quantity = serializers.SerializerMethodField()
     remaining_quantity = serializers.SerializerMethodField()
     is_saved = serializers.BooleanField(read_only=True)
     store = PromotionStoreSummarySerializer(read_only=True)
@@ -79,18 +84,23 @@ class PromotionPublicListSerializer(serializers.ModelSerializer):
         )
 
     def get_status(self, promotion):
-        return promotion.get_status(
-            issued_count=getattr(promotion, 'api_issued_count', None),
-            now=self.context['now'],
-        )
+        return promotion.get_status(now=self.context['now'])
 
-    def get_remaining_quantity(self, promotion):
+    def get_redeem_until(self, promotion):
+        redeem_until = promotion.redeem_until
+        if promotion.requires_coupon:
+            redeem_until = promotion.coupon_state(self.context['now']).today_expires_at or redeem_until
+        if redeem_until is None:
+            return None
+        return serializers.DateTimeField(format='iso-8601').to_representation(redeem_until)
+
+    def get_total_quantity(self, promotion):
         if not promotion.requires_coupon:
             return None
-        issued_count = getattr(promotion, 'api_issued_count', None)
-        if issued_count is None:
-            return promotion.remaining_quantity
-        return max(promotion.total_quantity - issued_count, 0)
+        return promotion.coupon_state(self.context['now']).display_quantity
+
+    def get_remaining_quantity(self, promotion):
+        return promotion.get_remaining_quantity(now=self.context['now'])
 
 
 class PromotionPublicDetailSerializer(PromotionPublicListSerializer):

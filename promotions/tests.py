@@ -11,7 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from coupons.models import Coupon, CouponRound
-from coupons.tests.helpers import make_coupon
+from coupons.tests.helpers import make_coupon, make_round
 from promotions.admin import PromotionAdmin
 from promotions.models import Promotion, PromotionEvent
 from promotions.validators import validate_promotion_update
@@ -121,35 +121,48 @@ class PromotionConstraintTests(TestCase):
 
 
 class PromotionStatusTests(TestCase):
+    """status 우선순위와 기간 경계. 경계 날짜마다 발급분을 둔다."""
+
     def setUp(self):
         self.promotion = make_promotion(make_store())
+        self.rounds = {day: make_round(self.promotion, day=day) for day in (STARTS, ENDS)}
 
-    def status(self, now, issued_count=0):
-        return self.promotion.get_status(now=now, issued_count=issued_count)
+    def status(self, now):
+        return self.promotion.get_status(now=now)
+
+    def fill_round(self, day):
+        coupon_round = self.rounds[day]
+        for i in range(coupon_round.quantity):
+            make_coupon(
+                user=User.objects.create_user(username=f'filled-{i}'),
+                promotion=self.promotion,
+                round=coupon_round,
+            )
 
     def test_unpublished_is_hidden_first(self):
         self.promotion.is_published = False
         self.assertEqual(self.status(STARTS - timedelta(days=1)), 'hidden')
         self.assertEqual(self.status(STARTS), 'hidden')
-        self.assertEqual(self.status(ENDS, issued_count=10), 'hidden')
+        self.assertEqual(self.status(ENDS), 'hidden')
 
     def test_upcoming_before_starts_at(self):
         self.assertEqual(self.status(STARTS - timedelta(seconds=1)), 'upcoming')
 
     def test_active_at_starts_at_boundary(self):
         self.assertEqual(self.status(STARTS), 'active')
-        self.assertEqual(self.status(ENDS - timedelta(seconds=1), issued_count=9), 'active')
+        self.assertEqual(self.status(ENDS - timedelta(seconds=1)), 'active')
 
     def test_ended_at_ends_at_boundary(self):
-        self.assertEqual(self.status(ENDS), 'ended')
-        self.assertEqual(self.status(ENDS, issued_count=10), 'ended')  # 종료가 소진보다 우선
+        self.fill_round(ENDS)
+        self.assertEqual(self.status(ENDS), 'ended')  # 종료가 소진보다 우선
 
-    def test_sold_out_when_issued_reaches_total(self):
-        self.assertEqual(self.status(STARTS, issued_count=10), 'sold_out')
-        self.assertEqual(self.status(STARTS, issued_count=11), 'sold_out')
+    def test_sold_out_when_today_round_is_full(self):
+        self.fill_round(STARTS)
+        self.assertEqual(self.status(STARTS), 'sold_out')
 
     def test_upcoming_has_priority_over_sold_out(self):
-        self.assertEqual(self.status(STARTS - timedelta(seconds=1), issued_count=10), 'upcoming')
+        self.fill_round(STARTS)
+        self.assertEqual(self.status(STARTS - timedelta(seconds=1)), 'upcoming')
 
     def test_issue_period_boundaries(self):
         self.assertFalse(self.promotion.is_in_issue_period(STARTS - timedelta(seconds=1)))
@@ -193,15 +206,82 @@ class NonCouponPromotionStatusTests(TestCase):
         self.assertFalse(self.promotion.is_in_issue_period(ENDS))
 
     def test_remaining_quantity_is_none(self):
-        self.assertIsNone(self.promotion.remaining_quantity)
+        self.assertIsNone(self.promotion.get_remaining_quantity(now=STARTS))
 
     def test_sold_out_never_occurs_and_coupon_count_is_not_queried(self):
         with self.assertNumQueries(0):
             status = self.promotion.get_status(now=STARTS)
-            status_with_issued_count = self.promotion.get_status(now=STARTS, issued_count=10)
 
         self.assertEqual(status, Promotion.Status.ACTIVE)
-        self.assertEqual(status_with_issued_count, Promotion.Status.ACTIVE)
+
+
+class PromotionCouponStateTests(TestCase):
+    """쿠폰형 프로모션의 오늘 발급분 기준 상태·잔여 수량·표시 값"""
+
+    def setUp(self):
+        self.promotion = make_promotion(make_store(), total_quantity=100)
+        self.now = timezone.now().replace(microsecond=0)
+
+    def coupon(self, coupon_round, name):
+        return make_coupon(
+            user=User.objects.create_user(username=name), promotion=self.promotion, round=coupon_round,
+        )
+
+    def annotated(self):
+        return Promotion.objects.with_coupon_state(self.now).get(pk=self.promotion.pk)
+
+    def assert_state(self, status, remaining, display_quantity):
+        """annotate한 객체와 직접 조회한 객체가 같은 결과를 내야 한다."""
+        for promotion in (self.promotion, self.annotated()):
+            self.assertEqual(promotion.get_status(now=self.now), status)
+            self.assertEqual(promotion.get_remaining_quantity(now=self.now), remaining)
+            self.assertEqual(promotion.coupon_state(self.now).display_quantity, display_quantity)
+        available = Promotion.objects.with_coupon_state(self.now).filter(
+            pk=self.promotion.pk, coupon_available=True,
+        ).exists()
+        self.assertEqual(available, status == 'active')
+
+    def test_no_round_is_sold_out(self):
+        self.assert_state('sold_out', 0, 0)
+
+    def test_open_round(self):
+        coupon_round = make_round(self.promotion, quantity=30)
+        self.coupon(coupon_round, 'a')
+        self.assert_state('active', 29, 30)
+
+    def test_full_round_is_sold_out(self):
+        coupon_round = make_round(self.promotion, quantity=1)
+        self.coupon(coupon_round, 'a')
+        self.assert_state('sold_out', 0, 1)
+
+    def test_closed_round_is_sold_out(self):
+        make_round(self.promotion, expires_at=self.now - timedelta(seconds=1), quantity=30)
+        self.assert_state('sold_out', 0, 30)
+
+    def test_previous_round_quantity_is_shown_when_no_round_today(self):
+        make_round(self.promotion, day=self.now - timedelta(days=2), quantity=20)
+        make_round(self.promotion, day=self.now + timedelta(days=1), quantity=50)  # 미래 발급분은 보지 않음
+        self.assert_state('sold_out', 0, 20)
+
+    def test_remaining_is_limited_by_total_quantity(self):
+        Promotion.objects.filter(pk=self.promotion.pk).update(total_quantity=3)
+        self.promotion.refresh_from_db()
+        yesterday = make_round(self.promotion, day=self.now - timedelta(days=1))
+        self.coupon(yesterday, 'a')
+        self.coupon(yesterday, 'b')
+        make_round(self.promotion, quantity=30)
+        self.assert_state('active', 1, 30)
+
+        self.coupon(self.promotion.coupon_rounds.get(round_date=timezone.localdate(self.now)), 'c')
+        self.assert_state('sold_out', 0, 30)
+
+    def test_annotated_state_needs_no_extra_query(self):
+        make_round(self.promotion, quantity=30)
+        promotion = self.annotated()
+        with self.assertNumQueries(0):
+            promotion.get_status(now=self.now)
+            promotion.get_remaining_quantity(now=self.now)
+            promotion.coupon_state(self.now).display_quantity
 
 
 class PromotionUpdatePolicyTests(TestCase):
@@ -422,7 +502,7 @@ class PromotionAdminTests(TestCase):
             listed_promotion = model_admin.get_queryset(request=None).get(pk=promotion.pk)
             status_label = model_admin.current_status(listed_promotion)
 
-        self.assertEqual(listed_promotion.admin_issued_count, 1)
+        self.assertEqual(listed_promotion.coupon_issued_count, 1)
         self.assertEqual(status_label, Promotion.Status.ACTIVE.label)
 
     def test_admin_rejects_invalid_dates_and_quantity(self):
