@@ -404,59 +404,42 @@ class PromotionPublicDetailAPITests(PromotionPublicAPITestBase):
             self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(coupon.id),
         )
 
-    def test_my_coupon_id_follows_current_round(self):
-        """현재 발급분에서 받은 쿠폰만 my_coupon_id. 새 발급분이 시작되면 null이라 다시 받을 수 있다."""
+    def test_yesterday_coupon_is_not_my_coupon_today(self):
+        """오늘 발급분에서 받은 쿠폰만 my_coupon_id. 어제 쿠폰만 있으면 null이라 오늘 다시 받을 수 있다."""
         promotion = self.make_promotion(with_round=False)
         user = User.objects.create_user(username='daily')
         yesterday = make_round(promotion, day=self.now - timedelta(days=1))
-        yesterday_coupon = self.issue(promotion, user, round=yesterday)
+        self.issue(promotion, user, round=yesterday)
         self.client.force_login(user)
 
-        # 다음 발급분이 시작되기 전까지는 직전 발급분이 현재 발급분
-        self.assertEqual(
-            self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(yesterday_coupon.id),
-        )
-
-        today = make_round(promotion)
         self.assertIsNone(self.client.get(self.url(promotion.id)).json()['my_coupon_id'])
 
-        today_coupon = self.issue(promotion, user, round=today)
+        today_coupon = self.issue(promotion, user, round=make_round(promotion))
         self.assertEqual(
             self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(today_coupon.id),
         )
 
-    def test_coupon_fields_follow_current_round(self):
-        """API 필드는 그대로, 값만 현재 발급분 기준."""
+    def test_coupon_fields_follow_today_round(self):
+        """API 필드는 그대로, 값만 오늘 발급분 기준."""
         promotion = self.make_promotion(with_round=False, total_quantity=100)
+        make_round(promotion, day=self.now - timedelta(days=1), quantity=20)
 
         body = self.client.get(self.url(promotion.id)).json()
         self.assertEqual(body['status'], 'sold_out')
-        self.assertEqual(body['total_quantity'], 0)  # 발급이 시작된 발급분이 없음
+        self.assertEqual(body['total_quantity'], 20)  # 오늘 발급분이 없으면 가장 최근 발급분 수량
         self.assertEqual(body['remaining_quantity'], 0)
         self.assertEqual(
             datetime.fromisoformat(body['redeem_until']), promotion.redeem_until,
-        )  # 발급분이 없으면 프로모션의 최종 사용 한도
+        )  # 오늘 발급분이 없으면 프로모션의 최종 사용 한도
 
-        yesterday = make_round(promotion, day=self.now - timedelta(days=1), quantity=20)
-        body = self.client.get(self.url(promotion.id)).json()
-        self.assertEqual(body['status'], 'sold_out')  # 직전 발급분이 마감됨
-        self.assertEqual(body['total_quantity'], 20)
-        self.assertEqual(body['remaining_quantity'], 0)
-        self.assertEqual(datetime.fromisoformat(body['redeem_until']), yesterday.expires_at)
-
-        current = make_round(
-            promotion,
-            issue_starts_at=self.now - timedelta(hours=1),
-            expires_at=self.now + timedelta(days=2),
-            quantity=30,
-        )
-        self.issue(promotion, round=current)
+        today = make_round(promotion, expires_at=self.now + timedelta(hours=1), quantity=30)
+        self.issue(promotion, round=today)
 
         body = self.client.get(self.url(promotion.id)).json()
         self.assertEqual(body['status'], 'active')
         self.assertEqual(body['total_quantity'], 30)
         self.assertEqual(body['remaining_quantity'], 29)
-        self.assertEqual(datetime.fromisoformat(body['redeem_until']), current.expires_at)
+        self.assertEqual(datetime.fromisoformat(body['redeem_until']), today.expires_at)
         self.assertIn('+09:00', body['redeem_until'])
 
     def test_non_coupon_detail_has_no_coupon_id(self):
