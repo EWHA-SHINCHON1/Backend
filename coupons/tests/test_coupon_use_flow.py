@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from coupons.models import Coupon, PinAttempt
-from coupons.tests.helpers import csrf_client, issue_url, make_promotion, make_store, run_in_thread
+from coupons.tests.helpers import csrf_client, issue_url, make_coupon, make_promotion, make_store, run_in_thread
 
 User = get_user_model()
 
@@ -143,7 +143,7 @@ class CouponUseHttpConcurrencyTests(TransactionTestCase):
         store.set_usage_pin(PIN)
         store.save()
         promotion = make_promotion(store)
-        self.coupon = Coupon.objects.create(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
+        self.coupon = make_coupon(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
 
     def test_concurrent_use_requests_succeed_once(self):
         count = 6

@@ -12,6 +12,7 @@ from coupons.models import Coupon, PinAttempt
 from coupons.services import use_coupon
 from coupons.tests.helpers import (
     logged_in_client,
+    make_coupon,
     make_promotion,
     make_store,
     run_in_thread,
@@ -48,7 +49,7 @@ class CouponUseStateTests(TestCase):
         self.client = logged_in_client(self.user)
         self.store = make_store_with_pin(name='갓구움')
         self.promotion = make_promotion(self.store, title='소금빵 1+1', benefit='소금빵 1개 증정')
-        self.coupon = Coupon.objects.create(
+        self.coupon = make_coupon(
             user=self.user, promotion=self.promotion, expires_at=self.promotion.redeem_until
         )
 
@@ -176,7 +177,7 @@ class CouponUseConcurrencyTests(TransactionTestCase):
         self.user = User.objects.create_user(username='u1')
         self.store = make_store_with_pin()
         promotion = make_promotion(self.store)
-        self.coupon = Coupon.objects.create(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
+        self.coupon = make_coupon(user=self.user, promotion=promotion, expires_at=promotion.redeem_until)
 
     def use(self, pin=PIN):
         return use_coupon(user=self.user, coupon_id=self.coupon.pk, pin=pin)

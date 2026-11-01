@@ -6,12 +6,13 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from coupons.models import Coupon
-from promotions.admin import PromotionAdmin
+from coupons.models import Coupon, CouponRound
+from coupons.tests.helpers import make_coupon, make_round
+from promotions.admin import CouponRoundInline, PromotionAdmin
 from promotions.models import Promotion, PromotionEvent
 from promotions.validators import validate_promotion_update
 from stores.models import Store
@@ -120,35 +121,48 @@ class PromotionConstraintTests(TestCase):
 
 
 class PromotionStatusTests(TestCase):
+    """status 우선순위와 기간 경계. 경계 날짜마다 발급분을 둔다."""
+
     def setUp(self):
         self.promotion = make_promotion(make_store())
+        self.rounds = {day: make_round(self.promotion, day=day) for day in (STARTS, ENDS)}
 
-    def status(self, now, issued_count=0):
-        return self.promotion.get_status(now=now, issued_count=issued_count)
+    def status(self, now):
+        return self.promotion.get_status(now=now)
+
+    def fill_round(self, day):
+        coupon_round = self.rounds[day]
+        for i in range(coupon_round.quantity):
+            make_coupon(
+                user=User.objects.create_user(username=f'filled-{i}'),
+                promotion=self.promotion,
+                round=coupon_round,
+            )
 
     def test_unpublished_is_hidden_first(self):
         self.promotion.is_published = False
         self.assertEqual(self.status(STARTS - timedelta(days=1)), 'hidden')
         self.assertEqual(self.status(STARTS), 'hidden')
-        self.assertEqual(self.status(ENDS, issued_count=10), 'hidden')
+        self.assertEqual(self.status(ENDS), 'hidden')
 
     def test_upcoming_before_starts_at(self):
         self.assertEqual(self.status(STARTS - timedelta(seconds=1)), 'upcoming')
 
     def test_active_at_starts_at_boundary(self):
         self.assertEqual(self.status(STARTS), 'active')
-        self.assertEqual(self.status(ENDS - timedelta(seconds=1), issued_count=9), 'active')
+        self.assertEqual(self.status(ENDS - timedelta(seconds=1)), 'active')
 
     def test_ended_at_ends_at_boundary(self):
-        self.assertEqual(self.status(ENDS), 'ended')
-        self.assertEqual(self.status(ENDS, issued_count=10), 'ended')  # 종료가 소진보다 우선
+        self.fill_round(ENDS)
+        self.assertEqual(self.status(ENDS), 'ended')  # 종료가 소진보다 우선
 
-    def test_sold_out_when_issued_reaches_total(self):
-        self.assertEqual(self.status(STARTS, issued_count=10), 'sold_out')
-        self.assertEqual(self.status(STARTS, issued_count=11), 'sold_out')
+    def test_sold_out_when_today_round_is_full(self):
+        self.fill_round(STARTS)
+        self.assertEqual(self.status(STARTS), 'sold_out')
 
     def test_upcoming_has_priority_over_sold_out(self):
-        self.assertEqual(self.status(STARTS - timedelta(seconds=1), issued_count=10), 'upcoming')
+        self.fill_round(STARTS)
+        self.assertEqual(self.status(STARTS - timedelta(seconds=1)), 'upcoming')
 
     def test_issue_period_boundaries(self):
         self.assertFalse(self.promotion.is_in_issue_period(STARTS - timedelta(seconds=1)))
@@ -192,15 +206,82 @@ class NonCouponPromotionStatusTests(TestCase):
         self.assertFalse(self.promotion.is_in_issue_period(ENDS))
 
     def test_remaining_quantity_is_none(self):
-        self.assertIsNone(self.promotion.remaining_quantity)
+        self.assertIsNone(self.promotion.get_remaining_quantity(now=STARTS))
 
     def test_sold_out_never_occurs_and_coupon_count_is_not_queried(self):
         with self.assertNumQueries(0):
             status = self.promotion.get_status(now=STARTS)
-            status_with_issued_count = self.promotion.get_status(now=STARTS, issued_count=10)
 
         self.assertEqual(status, Promotion.Status.ACTIVE)
-        self.assertEqual(status_with_issued_count, Promotion.Status.ACTIVE)
+
+
+class PromotionCouponStateTests(TestCase):
+    """쿠폰형 프로모션의 오늘 발급분 기준 상태·잔여 수량·표시 값"""
+
+    def setUp(self):
+        self.promotion = make_promotion(make_store(), total_quantity=100)
+        self.now = timezone.now().replace(microsecond=0)
+
+    def coupon(self, coupon_round, name):
+        return make_coupon(
+            user=User.objects.create_user(username=name), promotion=self.promotion, round=coupon_round,
+        )
+
+    def annotated(self):
+        return Promotion.objects.with_coupon_state(self.now).get(pk=self.promotion.pk)
+
+    def assert_state(self, status, remaining, display_quantity):
+        """annotate한 객체와 직접 조회한 객체가 같은 결과를 내야 한다."""
+        for promotion in (self.promotion, self.annotated()):
+            self.assertEqual(promotion.get_status(now=self.now), status)
+            self.assertEqual(promotion.get_remaining_quantity(now=self.now), remaining)
+            self.assertEqual(promotion.coupon_state(self.now).display_quantity, display_quantity)
+        available = Promotion.objects.with_coupon_state(self.now).filter(
+            pk=self.promotion.pk, coupon_available=True,
+        ).exists()
+        self.assertEqual(available, status == 'active')
+
+    def test_no_round_is_sold_out(self):
+        self.assert_state('sold_out', 0, 0)
+
+    def test_open_round(self):
+        coupon_round = make_round(self.promotion, quantity=30)
+        self.coupon(coupon_round, 'a')
+        self.assert_state('active', 29, 30)
+
+    def test_full_round_is_sold_out(self):
+        coupon_round = make_round(self.promotion, quantity=1)
+        self.coupon(coupon_round, 'a')
+        self.assert_state('sold_out', 0, 1)
+
+    def test_closed_round_is_sold_out(self):
+        make_round(self.promotion, expires_at=self.now - timedelta(seconds=1), quantity=30)
+        self.assert_state('sold_out', 0, 30)
+
+    def test_previous_round_quantity_is_shown_when_no_round_today(self):
+        make_round(self.promotion, day=self.now - timedelta(days=2), quantity=20)
+        make_round(self.promotion, day=self.now + timedelta(days=1), quantity=50)  # 미래 발급분은 보지 않음
+        self.assert_state('sold_out', 0, 20)
+
+    def test_remaining_is_limited_by_total_quantity(self):
+        Promotion.objects.filter(pk=self.promotion.pk).update(total_quantity=3)
+        self.promotion.refresh_from_db()
+        yesterday = make_round(self.promotion, day=self.now - timedelta(days=1))
+        self.coupon(yesterday, 'a')
+        self.coupon(yesterday, 'b')
+        make_round(self.promotion, quantity=30)
+        self.assert_state('active', 1, 30)
+
+        self.coupon(self.promotion.coupon_rounds.get(round_date=timezone.localdate(self.now)), 'c')
+        self.assert_state('sold_out', 0, 30)
+
+    def test_annotated_state_needs_no_extra_query(self):
+        make_round(self.promotion, quantity=30)
+        promotion = self.annotated()
+        with self.assertNumQueries(0):
+            promotion.get_status(now=self.now)
+            promotion.get_remaining_quantity(now=self.now)
+            promotion.coupon_state(self.now).display_quantity
 
 
 class PromotionUpdatePolicyTests(TestCase):
@@ -323,6 +404,41 @@ class PromotionAdminTests(TestCase):
         self.add_split_datetime(data, 'starts_at', values['starts_at'])
         self.add_split_datetime(data, 'ends_at', values['ends_at'])
         self.add_split_datetime(data, 'redeem_until', values['redeem_until'])
+        self.add_coupon_round_rows(data, promotion)
+        return data
+
+    def add_coupon_round_rows(self, data, promotion, rows=()):
+        """쿠폰 발급분 인라인 입력. 기존 발급분은 그대로 다시 보내고, rows는 새로 추가할 행이다.
+
+        rows의 각 항목: {'expires_at': datetime, 'quantity': int}
+        기존 발급분을 바꾸려면 {'round': CouponRound, ...바꿀 값, 'DELETE': True} 형식을 쓴다.
+        """
+        prefix = 'coupon_rounds'
+        existing = list(promotion.coupon_rounds.order_by('round_date', 'id')) if promotion else []
+        changes = {row['round'].pk: row for row in rows if 'round' in row}
+        new_rows = [row for row in rows if 'round' not in row]
+
+        index = 0
+        for coupon_round in existing:
+            row = changes.get(coupon_round.pk, {})
+            data[f'{prefix}-{index}-id'] = str(coupon_round.pk)
+            data[f'{prefix}-{index}-promotion'] = str(promotion.pk)
+            data[f'{prefix}-{index}-quantity'] = str(row.get('quantity', coupon_round.quantity))
+            self.add_split_datetime(data, f'{prefix}-{index}-expires_at', row.get('expires_at', coupon_round.expires_at))
+            if row.get('DELETE'):
+                data[f'{prefix}-{index}-DELETE'] = 'on'
+            index += 1
+        for row in new_rows:
+            data[f'{prefix}-{index}-id'] = ''
+            data[f'{prefix}-{index}-promotion'] = '' if promotion is None else str(promotion.pk)
+            data[f'{prefix}-{index}-quantity'] = str(row['quantity'])
+            self.add_split_datetime(data, f'{prefix}-{index}-expires_at', row['expires_at'])
+            index += 1
+
+        data[f'{prefix}-TOTAL_FORMS'] = str(index)
+        data[f'{prefix}-INITIAL_FORMS'] = str(len(existing))
+        data[f'{prefix}-MIN_NUM_FORMS'] = '0'
+        data[f'{prefix}-MAX_NUM_FORMS'] = '1000'
         return data
 
     @staticmethod
@@ -332,7 +448,7 @@ class PromotionAdminTests(TestCase):
         data[f'{field_name}_1'] = '' if local_value is None else local_value.strftime('%H:%M:%S')
 
     def issue_coupon(self, promotion):
-        return Coupon.objects.create(
+        return make_coupon(
             user=self.coupon_user,
             promotion=promotion,
             expires_at=promotion.redeem_until,
@@ -386,7 +502,7 @@ class PromotionAdminTests(TestCase):
             listed_promotion = model_admin.get_queryset(request=None).get(pk=promotion.pk)
             status_label = model_admin.current_status(listed_promotion)
 
-        self.assertEqual(listed_promotion.admin_issued_count, 1)
+        self.assertEqual(listed_promotion.coupon_issued_count, 1)
         self.assertEqual(status_label, Promotion.Status.ACTIVE.label)
 
     def test_admin_rejects_invalid_dates_and_quantity(self):
@@ -485,6 +601,267 @@ class PromotionAdminTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('admin:login'), response.url)
+
+
+class CouponRoundAdminTests(TestCase):
+    """프로모션 Admin의 쿠폰 발급분 인라인 입력·검증"""
+
+    promotion_data = PromotionAdminTests.promotion_data
+    add_split_datetime = staticmethod(PromotionAdminTests.add_split_datetime)
+    add_coupon_round_rows = PromotionAdminTests.add_coupon_round_rows
+    store = None
+
+    def setUp(self):
+        self.store = make_store()
+        self.client.force_login(User.objects.create_superuser(
+            username='round-admin', password='admin-password', email='round@example.com',
+        ))
+        self.promotion = make_promotion(self.store, total_quantity=100)
+        self.tomorrow = timezone.now().replace(microsecond=0) + timedelta(days=1)
+
+    def post_rounds(self, *rows, promotion=None, **promotion_overrides):
+        promotion = promotion or self.promotion
+        data = self.promotion_data(promotion, **promotion_overrides)
+        self.add_coupon_round_rows(data, promotion, rows)
+        return self.client.post(reverse('admin:promotions_promotion_change', args=[promotion.pk]), data)
+
+    def make_round(self, expires_at=None, quantity=30):
+        return CouponRound.objects.create(
+            promotion=self.promotion,
+            quantity=quantity,
+            expires_at=expires_at or self.tomorrow,
+        )
+
+    def issue(self, coupon_round):
+        return Coupon.objects.create(
+            user=User.objects.create_user(username=f'u{Coupon.objects.count()}'),
+            promotion=self.promotion,
+            round=coupon_round,
+            expires_at=coupon_round.expires_at,
+        )
+
+    def inline_errors(self, response):
+        self.assertEqual(response.status_code, 200)
+        formset = response.context['inline_admin_formsets'][0].formset
+        form_errors = [str(error) for form in formset.forms for errors in form.errors.values() for error in errors]
+        return form_errors + [str(error) for error in formset.non_form_errors()]
+
+    def test_admin_adds_round_with_seoul_round_date(self):
+        response = self.post_rounds({'expires_at': self.tomorrow, 'quantity': 30})
+
+        self.assertEqual(response.status_code, 302)
+        coupon_round = CouponRound.objects.get(promotion=self.promotion)
+        self.assertEqual(coupon_round.quantity, 30)
+        self.assertEqual(coupon_round.expires_at, self.tomorrow)
+        self.assertEqual(coupon_round.round_date, timezone.localdate(self.tomorrow))
+
+    def test_admin_adds_several_future_days_at_once(self):
+        response = self.post_rounds(
+            {'expires_at': self.tomorrow, 'quantity': 30},
+            {'expires_at': self.tomorrow + timedelta(days=1), 'quantity': 50},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(CouponRound.objects.filter(promotion=self.promotion).count(), 2)
+
+    def test_second_round_on_same_day_is_rejected(self):
+        self.make_round()
+        response = self.post_rounds({'expires_at': self.tomorrow + timedelta(minutes=30), 'quantity': 10})
+
+        self.assertTrue(any('하루에 하나' in error for error in self.inline_errors(response)))
+        self.assertEqual(CouponRound.objects.count(), 1)
+
+    def test_same_day_rows_in_one_submit_are_rejected(self):
+        response = self.post_rounds(
+            {'expires_at': self.tomorrow, 'quantity': 30},
+            {'expires_at': self.tomorrow + timedelta(minutes=30), 'quantity': 30},
+        )
+
+        self.assertTrue(any('하루에 하나' in error for error in self.inline_errors(response)))
+        self.assertFalse(CouponRound.objects.exists())
+
+    def test_invalid_new_rounds_are_rejected(self):
+        now = timezone.now().replace(microsecond=0)
+        cases = (
+            ({'expires_at': now - timedelta(minutes=1), 'quantity': 30}, '이미 지난 시각'),
+            ({'expires_at': REDEEM_UNTIL + timedelta(seconds=1), 'quantity': 30}, '쿠폰 사용 종료 시각'),
+            ({'expires_at': ENDS + timedelta(days=2), 'quantity': 30}, '프로모션 기간'),
+            ({'expires_at': self.tomorrow, 'quantity': 0}, ''),
+        )
+        for row, message in cases:
+            with self.subTest(row=row):
+                errors = self.inline_errors(self.post_rounds(row))
+                self.assertTrue(errors)
+                self.assertTrue(any(message in error for error in errors))
+                self.assertFalse(CouponRound.objects.exists())
+
+    def test_round_rejected_for_non_coupon_promotion(self):
+        promotion = make_non_coupon_promotion(self.store)
+        response = self.post_rounds({'expires_at': self.tomorrow, 'quantity': 30}, promotion=promotion)
+
+        self.assertTrue(any('비쿠폰형' in error for error in self.inline_errors(response)))
+        self.assertFalse(CouponRound.objects.exists())
+
+    def test_round_without_coupon_can_be_changed_and_deleted(self):
+        coupon_round = self.make_round()
+        later = self.tomorrow + timedelta(hours=2)
+
+        response = self.post_rounds({'round': coupon_round, 'expires_at': later, 'quantity': 10})
+        self.assertEqual(response.status_code, 302)
+        coupon_round.refresh_from_db()
+        self.assertEqual((coupon_round.expires_at, coupon_round.quantity), (later, 10))
+
+        response = self.post_rounds({'round': coupon_round, 'DELETE': True})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(CouponRound.objects.exists())
+
+    def test_round_with_coupon_is_protected(self):
+        coupon_round = self.make_round(quantity=30)
+        coupon = self.issue(coupon_round)
+        self.issue(coupon_round)
+        cases = (
+            ({'DELETE': True}, ''),  # Django Admin의 PROTECT 관계 삭제 거절 메시지
+            ({'expires_at': self.tomorrow + timedelta(hours=1)}, '사용 마감은 변경할 수 없습니다'),
+            ({'quantity': 1}, '2장이 발급되어'),
+        )
+        for change, message in cases:
+            with self.subTest(change=change):
+                errors = self.inline_errors(self.post_rounds({'round': coupon_round, **change}))
+                self.assertTrue(errors)
+                self.assertTrue(any(message in error for error in errors))
+        coupon_round.refresh_from_db()
+        coupon.refresh_from_db()
+        self.assertEqual((coupon_round.expires_at, coupon_round.quantity), (self.tomorrow, 30))
+        self.assertEqual(coupon.expires_at, self.tomorrow)
+
+    def test_quantity_increase_allowed_after_coupon_issue(self):
+        coupon_round = self.make_round(quantity=30)
+        self.issue(coupon_round)
+
+        response = self.post_rounds({'round': coupon_round, 'quantity': 40})
+
+        self.assertEqual(response.status_code, 302)
+        coupon_round.refresh_from_db()
+        self.assertEqual(coupon_round.quantity, 40)
+
+    def test_past_round_kept_unchanged_does_not_block_other_edits(self):
+        """지난 발급분이 있어도 그대로 두면 다른 수정은 저장된다."""
+        coupon_round = self.make_round()
+        CouponRound.objects.filter(pk=coupon_round.pk).update(
+            expires_at=STARTS - timedelta(hours=1),
+        )
+
+        response = self.post_rounds(featured_rank=5)
+
+        self.assertEqual(response.status_code, 302)
+        self.promotion.refresh_from_db()
+        self.assertEqual(self.promotion.featured_rank, 5)
+
+
+class PromotionAdminCouponStatsTests(TestCase):
+    """Admin 프로모션 목록·발급분 인라인의 쿠폰 통계"""
+
+    def setUp(self):
+        self.now = timezone.now().replace(microsecond=0)
+        self.promotion = make_promotion(make_store(), total_quantity=1000)
+        # 어제 발급분(마감): 30장 중 5장 발급 → 3장 사용, 2장 미사용 만료, 25장 소멸
+        self.yesterday = make_round(self.promotion, day=self.now - timedelta(days=1), quantity=30)
+        # 오늘 발급분(진행 중): 30장 중 3장 발급 → 1장 사용, 2장 사용 대기
+        self.today = make_round(self.promotion, expires_at=self.now + timedelta(hours=1), quantity=30)
+        for i in range(5):
+            self.coupon(self.yesterday, f'y{i}', used=i < 3)
+        for i in range(3):
+            self.coupon(self.today, f't{i}', used=i < 1)
+        self.model_admin = PromotionAdmin(Promotion, admin.site)
+
+    def coupon(self, coupon_round, name, used):
+        return make_coupon(
+            user=User.objects.create_user(username=name),
+            promotion=self.promotion,
+            round=coupon_round,
+            used_at=self.now - timedelta(minutes=1) if used else None,
+        )
+
+    def list_stats(self, promotion):
+        names = (
+            'distributed_count', 'issued_count', 'used_count', 'expired_count', 'waiting_count',
+            'lapsed_count', 'usage_rate_of_issued', 'usage_rate_of_distributed',
+        )
+        listed = self.model_admin.get_queryset(request=None).get(pk=promotion.pk)
+        return {name: getattr(self.model_admin, name)(listed) for name in names}
+
+    def test_promotion_list_stats(self):
+        with self.assertNumQueries(1):
+            stats = self.list_stats(self.promotion)
+
+        self.assertEqual(stats, {
+            'distributed_count': 60,  # 발급분 2개 × 30 (쿠폰 수만큼 부풀지 않음)
+            'issued_count': 8,
+            'used_count': 4,
+            'expired_count': 2,
+            'waiting_count': 2,
+            'lapsed_count': 25,  # 마감된 어제 발급분의 남은 수량만
+            'usage_rate_of_issued': '50.0%',  # 4 / 8
+            'usage_rate_of_distributed': '6.7%',  # 4 / 60
+        })
+        self.assertEqual(
+            stats['issued_count'],
+            stats['used_count'] + stats['expired_count'] + stats['waiting_count'],
+        )
+
+    def test_promotion_without_rounds_and_non_coupon(self):
+        empty = make_promotion(make_store())
+        self.assertEqual(self.list_stats(empty), {
+            'distributed_count': 0,
+            'issued_count': 0,
+            'used_count': 0,
+            'expired_count': 0,
+            'waiting_count': 0,
+            'lapsed_count': 0,
+            'usage_rate_of_issued': '0.0%',
+            'usage_rate_of_distributed': '0.0%',
+        })
+        non_coupon = make_non_coupon_promotion(make_store())
+        self.assertEqual(set(self.list_stats(non_coupon).values()), {'-'})
+
+    def test_round_inline_stats(self):
+        inline = CouponRoundInline(Promotion, admin.site)
+        request = RequestFactory().get('/')
+        request.user = User.objects.create_superuser(
+            username='inline-admin', password='admin-password', email='inline@example.com',
+        )
+        rounds = {
+            coupon_round.pk: coupon_round
+            for coupon_round in inline.get_queryset(request).filter(promotion=self.promotion)
+        }
+
+        def row(coupon_round):
+            obj = rounds[coupon_round.pk]
+            return (
+                inline.issued_count(obj), inline.used_count(obj), inline.expired_count(obj),
+                inline.waiting_count(obj), inline.lapsed_count(obj),
+                inline.usage_rate_of_issued(obj), inline.usage_rate_of_quantity(obj),
+            )
+
+        self.assertEqual(row(self.yesterday), (5, 3, 2, 0, 25, '60.0%', '10.0%'))
+        self.assertEqual(row(self.today), (3, 1, 0, 2, '-', '33.3%', '3.3%'))
+        new_row = CouponRound(promotion=self.promotion, quantity=10)
+        self.assertEqual(inline.issued_count(new_row), '-')
+        self.assertEqual(inline.lapsed_count(new_row), '-')
+
+    def test_change_page_renders_stats(self):
+        self.client.force_login(User.objects.create_superuser(
+            username='stats-admin', password='admin-password', email='stats@example.com',
+        ))
+        response = self.client.get(reverse('admin:promotions_promotion_change', args=[self.promotion.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '안 가져가고 소멸')
+        self.assertContains(response, '60.0%')
+
+        response = self.client.get(reverse('admin:promotions_promotion_changelist'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '뿌린 양')
+        self.assertContains(response, '6.7%')
 
 
 class PromotionEventTests(TestCase):

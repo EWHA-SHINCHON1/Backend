@@ -1,5 +1,5 @@
 from django.db import IntegrityError, models, transaction
-from django.db.models import BooleanField, Case, Count, Exists, F, OuterRef, Q, Subquery, Value, When
+from django.db.models import BooleanField, Case, Exists, F, OuterRef, Q, Subquery, Value, When
 from django.utils import timezone
 from django.utils.cache import patch_cache_control, patch_vary_headers
 from rest_framework import status
@@ -44,7 +44,7 @@ class PromotionPublicQueryMixin:
         queryset = (
             Promotion.objects.filter(is_published=True, store__is_active=True)
             .select_related('store')
-            .annotate(api_issued_count=Count('coupons'))
+            .with_coupon_state(self.now)
         )
         if self.request.user.is_authenticated:
             saved = SavedPromotion.objects.filter(
@@ -130,15 +130,10 @@ class PromotionPublicListView(PromotionPublicQueryMixin, ListAPIView):
             return queryset.filter(ends_at__lte=self.now)
 
         in_period = Q(starts_at__lte=self.now, ends_at__gt=self.now)
+        # coupon_available은 Promotion.get_status()의 쿠폰형 소진 판단과 같은 기준(오늘 발급분)입니다.
         if status_value == Promotion.Status.SOLD_OUT:
-            return queryset.filter(
-                in_period,
-                requires_coupon=True,
-                api_issued_count__gte=F('total_quantity'),
-            )
-        return queryset.filter(in_period).filter(
-            Q(requires_coupon=False) | Q(api_issued_count__lt=F('total_quantity'))
-        )
+            return queryset.filter(in_period, requires_coupon=True, coupon_available=False)
+        return queryset.filter(in_period).filter(Q(requires_coupon=False) | Q(coupon_available=True))
 
     def _order(self, queryset, ordering):
         if ordering == 'latest':
@@ -169,9 +164,11 @@ class PromotionPublicDetailView(PromotionPublicQueryMixin, RetrieveAPIView):
     def get_queryset(self):
         queryset = self.public_queryset().prefetch_related('store__menus')
         if self.request.user.is_authenticated:
+            # 오늘 발급분에서 받은 쿠폰만 내 쿠폰으로 봅니다. 이전 날짜 쿠폰만 있으면 null이라 다시 받을 수 있습니다.
             coupon_id = Coupon.objects.filter(
                 user=self.request.user,
                 promotion_id=OuterRef('pk'),
+                round__round_date=timezone.localdate(self.now),
             ).values('id')[:1]
             return queryset.annotate(
                 api_my_coupon_id=Subquery(coupon_id, output_field=models.UUIDField())
@@ -228,10 +225,8 @@ class SavedPromotionListView(ListAPIView):
                 saved_by__user=self.request.user,
             )
             .select_related('store')
-            .annotate(
-                api_issued_count=Count('coupons'),
-                is_saved=Value(True, output_field=BooleanField()),
-            )
+            .with_coupon_state(self.now)
+            .annotate(is_saved=Value(True, output_field=BooleanField()))
             .order_by('-saved_by__created_at', '-saved_by__id')
         )
 
