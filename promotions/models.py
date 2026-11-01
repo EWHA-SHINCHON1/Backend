@@ -11,70 +11,71 @@ from django.utils import timezone
 
 @dataclass(frozen=True)
 class CouponState:
-    """쿠폰형 프로모션의 발급 상태. 기준은 now가 속한 날(Asia/Seoul)의 발급분입니다.
+    """쿠폰형 프로모션의 발급 상태. 기준은 now 시점의 현재 발급분(발급이 시작된 가장 최근 발급분)입니다.
 
-    - 오늘 발급분이 열려 있고, 발급분 수량과 프로모션 전체 상한(total_quantity)이 모두 남아 있어야 발급할 수 있습니다.
-    - 응답의 total_quantity·redeem_until은 오늘 발급분 기준으로 보여 줍니다. (API 필드는 그대로)
+    - 현재 발급분이 열려 있고, 발급분 수량과 프로모션 전체 상한(total_quantity)이 모두 남아 있어야 발급할 수 있습니다.
+    - 응답의 total_quantity·redeem_until은 현재 발급분 기준으로 보여 줍니다. (API 필드는 그대로)
     """
 
     issued_count: int
-    today_quantity: int | None
-    today_expires_at: datetime | None
-    today_issued_count: int
-    latest_quantity: int | None
+    current_round_id: int | None
+    current_quantity: int | None
+    current_expires_at: datetime | None
+    current_issued_count: int
 
     def is_available(self, now, total_quantity):
-        if self.today_quantity is None or now >= self.today_expires_at:
+        # 현재 발급분은 이미 발급이 시작된 것이므로 마감만 확인합니다.
+        if self.current_round_id is None or now >= self.current_expires_at:
             return False
-        return self.today_issued_count < self.today_quantity and self.issued_count < total_quantity
+        return self.current_issued_count < self.current_quantity and self.issued_count < total_quantity
 
     def remaining_quantity(self, now, total_quantity):
         if not self.is_available(now, total_quantity):
             return 0
-        return min(self.today_quantity - self.today_issued_count, total_quantity - self.issued_count)
+        return min(self.current_quantity - self.current_issued_count, total_quantity - self.issued_count)
 
     @property
     def display_quantity(self):
-        """오늘 발급분 수량. 없으면 가장 최근 발급분 수량, 발급분이 없으면 0."""
-        if self.today_quantity is not None:
-            return self.today_quantity
-        return self.latest_quantity or 0
+        """현재 발급분 수량. 발급이 시작된 발급분이 없으면 0."""
+        return self.current_quantity or 0
 
 
 class PromotionQuerySet(models.QuerySet):
     def with_coupon_state(self, now):
-        """get_status()·coupon_state()가 추가 쿼리 없이 쓰도록 쿠폰 수와 오늘 발급분 정보를 붙입니다.
+        """get_status()·coupon_state()가 추가 쿼리 없이 쓰도록 쿠폰 수와 현재 발급분 정보를 붙입니다.
 
         coupon_available은 목록 status 필터용입니다. (기간·공개 여부는 보지 않음)
         """
         from coupons.models import Coupon, CouponRound
 
-        today = timezone.localdate(now)
-        rounds = CouponRound.objects.filter(promotion=OuterRef('pk'))
-        today_round = rounds.filter(round_date=today)
-        latest_round = rounds.filter(round_date__lte=today).order_by('-round_date')
-
-        def coupon_count(**filters):
-            coupons = (
-                Coupon.objects.filter(promotion=OuterRef('pk'), **filters)
-                .order_by()
-                .values('promotion')
-                .annotate(count=Count('pk'))
-                .values('count')
-            )
-            return Coalesce(Subquery(coupons), 0)
+        current_round = CouponRound.objects.filter(promotion=OuterRef('pk')).current(now)
+        issued = (
+            Coupon.objects.filter(promotion=OuterRef('pk'))
+            .order_by()
+            .values('promotion')
+            .annotate(count=Count('pk'))
+            .values('count')
+        )
+        current_issued = (
+            Coupon.objects.filter(round_id=OuterRef('current_round_id'))
+            .order_by()
+            .values('round')
+            .annotate(count=Count('pk'))
+            .values('count')
+        )
 
         return self.annotate(
-            coupon_issued_count=coupon_count(),
-            today_round_quantity=Subquery(today_round.values('quantity')[:1]),
-            today_round_expires_at=Subquery(today_round.values('expires_at')[:1]),
-            today_round_issued_count=coupon_count(round__round_date=today),
-            latest_round_quantity=Subquery(latest_round.values('quantity')[:1]),
+            coupon_issued_count=Coalesce(Subquery(issued), 0),
+            current_round_id=Subquery(current_round.values('pk')[:1]),
+            current_round_quantity=Subquery(current_round.values('quantity')[:1]),
+            current_round_expires_at=Subquery(current_round.values('expires_at')[:1]),
+        ).annotate(
+            current_round_issued_count=Coalesce(Subquery(current_issued), 0),
         ).annotate(
             coupon_available=Case(
                 When(
-                    today_round_expires_at__gt=now,
-                    today_round_issued_count__lt=F('today_round_quantity'),
+                    current_round_expires_at__gt=now,
+                    current_round_issued_count__lt=F('current_round_quantity'),
                     coupon_issued_count__lt=F('total_quantity'),
                     then=Value(True),
                 ),
@@ -89,7 +90,7 @@ class Promotion(models.Model):
 
     status는 저장하지 않고 get_status()로 계산합니다.
     - 프로모션 유효 기간: starts_at <= now < ends_at
-    - 쿠폰형 프로모션의 신규 발급 가능 기간도 프로모션 유효 기간과 같고, 그 안에서 관리자가 연 그날 발급분에서 발급합니다.
+    - 쿠폰형 프로모션의 신규 발급 가능 기간도 프로모션 유효 기간과 같고, 그 안에서 관리자가 연 발급분 기간에만 발급합니다.
     - redeem_until은 발급분 사용 마감의 최종 한도이고, total_quantity는 모든 발급분을 합한 전체 발급 상한입니다.
     - 이미 발급된 쿠폰은 유효 기간이 끝나도 자신의 expires_at까지 사용합니다.
     """
@@ -178,33 +179,31 @@ class Promotion(models.Model):
         return self.coupons.count()
 
     def coupon_state(self, now=None):
-        """now가 속한 날의 발급분 기준 쿠폰 상태.
+        """now 시점의 현재 발급분 기준 쿠폰 상태.
 
         with_coupon_state(now)로 조회한 객체는 붙어 있는 값을 쓰고(같은 now 기준이어야 함),
         아니면 필요한 값을 직접 조회합니다.
         """
-        if hasattr(self, 'today_round_quantity'):
+        if hasattr(self, 'current_round_id'):
             return CouponState(
                 issued_count=self.coupon_issued_count,
-                today_quantity=self.today_round_quantity,
-                today_expires_at=self.today_round_expires_at,
-                today_issued_count=self.today_round_issued_count,
-                latest_quantity=self.latest_round_quantity,
+                current_round_id=self.current_round_id,
+                current_quantity=self.current_round_quantity,
+                current_expires_at=self.current_round_expires_at,
+                current_issued_count=self.current_round_issued_count,
             )
         now = now or timezone.now()
-        today = timezone.localdate(now)
-        today_round = self.coupon_rounds.filter(round_date=today).first()
-        latest_round = self.coupon_rounds.filter(round_date__lte=today).order_by('-round_date').first()
+        current_round = self.coupon_rounds.current(now).first()
         return CouponState(
             issued_count=self.issued_count,
-            today_quantity=today_round.quantity if today_round else None,
-            today_expires_at=today_round.expires_at if today_round else None,
-            today_issued_count=today_round.coupons.count() if today_round else 0,
-            latest_quantity=latest_round.quantity if latest_round else None,
+            current_round_id=current_round.pk if current_round else None,
+            current_quantity=current_round.quantity if current_round else None,
+            current_expires_at=current_round.expires_at if current_round else None,
+            current_issued_count=current_round.coupons.count() if current_round else 0,
         )
 
     def get_remaining_quantity(self, now=None):
-        """오늘 발급분에서 지금 더 받을 수 있는 수량. 발급분이 닫혔거나 없으면 0, 비쿠폰형은 None."""
+        """현재 발급분에서 지금 더 받을 수 있는 수량. 발급분이 닫혔거나 없으면 0, 비쿠폰형은 None."""
         if not self.requires_coupon:
             return None
         now = now or timezone.now()
@@ -213,7 +212,7 @@ class Promotion(models.Model):
     def get_status(self, *, now=None):
         """우선순위: hidden → upcoming → ended → sold_out → active
 
-        쿠폰형은 오늘 발급분이 없거나, 마감됐거나, 발급분 수량·전체 상한에 도달하면 sold_out입니다.
+        쿠폰형은 현재 발급분이 없거나, 마감됐거나, 발급분 수량·전체 상한에 도달하면 sold_out입니다.
         with_coupon_state(now)로 조회했다면 추가 쿼리 없이 계산합니다.
         """
         now = now or timezone.now()
