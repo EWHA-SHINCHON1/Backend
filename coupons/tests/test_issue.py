@@ -23,6 +23,7 @@ from coupons.tests.helpers import (
     make_round,
     make_store,
     run_in_thread,
+    start_of_day,
     wait_for_lock_waiter,
 )
 from promotions.models import Promotion
@@ -65,13 +66,13 @@ class CouponIssueTests(TestCase):
         self.assertEqual(str(coupon.pk), body['coupon']['id'])
         self.assertEqual(coupon.user, self.user)
         self.assertEqual(coupon.promotion, self.promotion)
-        today_round = self.promotion.coupon_rounds.get()
-        self.assertEqual(coupon.round, today_round)
-        self.assertEqual(coupon.expires_at, today_round.expires_at)
+        current_round = self.promotion.coupon_rounds.get()
+        self.assertEqual(coupon.round, current_round)
+        self.assertEqual(coupon.expires_at, current_round.expires_at)
         self.assertIsNone(coupon.used_at)
         # 응답 시각은 프로젝트 타임존(Asia/Seoul) 기준
         expires_at = datetime.strptime(body['coupon']['expires_at'], '%Y-%m-%dT%H:%M:%S%z')
-        self.assertEqual(expires_at, today_round.expires_at)
+        self.assertEqual(expires_at, current_round.expires_at)
         self.assertTrue(body['coupon']['expires_at'].endswith('+0900'))
 
     def test_reissue_returns_200_with_same_coupon(self):
@@ -117,14 +118,11 @@ class CouponIssueTests(TestCase):
         coupon = self.issue_existing(expires_at=timezone.now() - timedelta(seconds=1))
         self.assert_returns_existing(coupon, 'expired')
 
-    def test_previous_day_coupon_is_not_returned(self):
-        """이전 날짜 발급분의 쿠폰은 "이미 받은 쿠폰"으로 보지 않는다. (프로모션 종료 후에는 종료 오류)"""
-        self.issue_existing()
+    def test_existing_coupon_returned_after_promotion_ended(self):
+        """다음 발급분이 시작되기 전까지는 현재 발급분의 쿠폰을 그대로 돌려준다."""
+        coupon = self.issue_existing()
         with freeze(self.promotion.ends_at + timedelta(days=1)):
-            response = self.post()
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()['error']['code'], 'PROMOTION_ENDED')
-        self.assertEqual(Coupon.objects.filter(user=self.user).count(), 1)
+            self.assert_returns_existing(coupon, 'available')
 
     def test_existing_coupon_returned_after_unpublished(self):
         coupon = self.issue_existing()
@@ -348,6 +346,34 @@ class CouponRoundIssueTests(TestCase):
         self.assert_sold_out(self.post(logged_in_client(User.objects.create_user(username='b'))))
         self.assertEqual(today.coupons.count(), 1)
 
+    def test_multi_day_round_issues_for_whole_period(self):
+        """발급 시작 ~ 사용 마감이 여러 날이면 그 기간 내내 발급하고, 쿠폰은 사용 마감까지 쓴다."""
+        coupon_round = make_round(
+            self.promotion,
+            issue_starts_at=self.now - timedelta(days=1),
+            expires_at=self.now + timedelta(days=2),
+            quantity=5,
+        )
+        response = self.post()
+        self.assertEqual(response.status_code, 201)
+        coupon = Coupon.objects.get(pk=response.json()['coupon']['id'])
+        self.assertEqual((coupon.round, coupon.expires_at), (coupon_round, coupon_round.expires_at))
+
+        other = logged_in_client(User.objects.create_user(username='later'))
+        with freeze(self.now + timedelta(days=1)):
+            self.assertEqual(self.post(other).status_code, 201)
+        with freeze(coupon_round.expires_at):
+            self.assert_sold_out(self.post(logged_in_client(User.objects.create_user(username='late'))))
+
+    def test_previous_round_coupon_is_returned_until_next_round_starts(self):
+        previous = make_round(self.promotion, day=self.now - timedelta(days=1))
+        coupon = make_coupon(user=self.user, promotion=self.promotion, round=previous)
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['coupon']['id'], str(coupon.pk))
+
     def test_same_user_gets_new_coupon_next_day(self):
         yesterday = make_round(self.promotion, day=self.now - timedelta(days=1))
         old = make_coupon(user=self.user, promotion=self.promotion, round=yesterday)
@@ -426,7 +452,7 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
     def admin_post(self, promotion, rounds=(), **overrides):
         """Admin 변경 폼에 현재 값 + overrides를 그대로 제출한다.
 
-        rounds: 새로 추가할 발급분 (expires_at, quantity) 목록. 기존 발급분은 보내지 않으므로 그대로 유지된다.
+        rounds: 새로 추가할 발급분 (issue_starts_at, expires_at, quantity) 목록. 기존 발급분은 보내지 않으므로 그대로 유지된다.
         """
         client = APIClient()
         client.force_login(self.admin_user)
@@ -464,12 +490,13 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
             'coupon_rounds-MIN_NUM_FORMS': '0',
             'coupon_rounds-MAX_NUM_FORMS': '1000',
         })
-        for i, (expires_at, quantity) in enumerate(rounds):
-            local = timezone.localtime(expires_at)
+        for i, (issue_starts_at, expires_at, quantity) in enumerate(rounds):
             data[f'coupon_rounds-{i}-promotion'] = str(promotion.pk)
             data[f'coupon_rounds-{i}-quantity'] = str(quantity)
-            data[f'coupon_rounds-{i}-expires_at_0'] = local.strftime('%Y-%m-%d')
-            data[f'coupon_rounds-{i}-expires_at_1'] = local.strftime('%H:%M:%S')
+            for name, value in (('issue_starts_at', issue_starts_at), ('expires_at', expires_at)):
+                local = timezone.localtime(value)
+                data[f'coupon_rounds-{i}-{name}_0'] = local.strftime('%Y-%m-%d')
+                data[f'coupon_rounds-{i}-{name}_1'] = local.strftime('%H:%M:%S')
         return client.post(reverse('admin:promotions_promotion_change', args=[promotion.pk]), data)
 
     def test_admin_change_waits_for_issue_and_is_rejected(self):
@@ -504,7 +531,7 @@ class CouponIssueAdminRaceTests(TransactionTestCase):
         round_expires_at = end_of_day(timezone.now())
         results = {}
         with transaction.atomic():
-            response = self.admin_post(promotion, rounds=[(round_expires_at, 30)])
+            response = self.admin_post(promotion, rounds=[(start_of_day(timezone.now()), round_expires_at, 30)])
             self.assertEqual(response.status_code, 302)
             thread = run_in_thread(
                 lambda: issue_coupon(user=self.user, promotion_id=promotion.pk), results, 'issue'
