@@ -15,34 +15,56 @@ User = get_user_model()
 KST = ZoneInfo('Asia/Seoul')
 
 
-def make_round(promotion, expires_at, quantity=30):
-    return CouponRound.objects.create(promotion=promotion, quantity=quantity, expires_at=expires_at)
+def make_round(promotion, expires_at, quantity=30, issue_starts_at=None):
+    """발급 시작을 주지 않으면 사용 마감 하루 전부터 연다."""
+    return CouponRound.objects.create(
+        promotion=promotion,
+        quantity=quantity,
+        issue_starts_at=issue_starts_at or expires_at - timedelta(days=1),
+        expires_at=expires_at,
+    )
 
 
 class CouponRoundModelTests(TestCase):
     def setUp(self):
         self.promotion = make_promotion(with_round=False)
 
-    def test_round_date_is_seoul_date_of_expires_at(self):
-        # 11/1 00:30 KST = 10/31 15:30 UTC. UTC 날짜가 아니라 한국 날짜여야 한다.
-        coupon_round = make_round(self.promotion, datetime(2026, 11, 1, 0, 30, tzinfo=KST))
-        self.assertEqual(coupon_round.round_date.isoformat(), '2026-11-01')
+    def test_issue_starts_at_must_be_before_expires_at(self):
+        expires_at = datetime(2026, 11, 3, 20, 0, tzinfo=KST)
+        for issue_starts_at in (expires_at, expires_at + timedelta(seconds=1)):
+            with self.subTest(issue_starts_at=issue_starts_at), self.assertRaises(IntegrityError), transaction.atomic():
+                make_round(self.promotion, expires_at, issue_starts_at=issue_starts_at)
 
-        coupon_round.expires_at = datetime(2026, 11, 2, 21, 0, tzinfo=KST)
-        coupon_round.save()
-        coupon_round.refresh_from_db()
-        self.assertEqual(coupon_round.round_date.isoformat(), '2026-11-02')
+    def test_multi_day_round_is_open_for_whole_period(self):
+        coupon_round = make_round(
+            self.promotion,
+            datetime(2026, 11, 3, 20, 0, tzinfo=KST),
+            issue_starts_at=datetime(2026, 11, 1, 10, 0, tzinfo=KST),
+        )
+        self.assertFalse(coupon_round.is_open(datetime(2026, 11, 1, 9, 59, 59, tzinfo=KST)))
+        self.assertTrue(coupon_round.is_open(datetime(2026, 11, 1, 10, 0, tzinfo=KST)))
+        self.assertTrue(coupon_round.is_open(datetime(2026, 11, 2, 23, 0, tzinfo=KST)))
+        self.assertFalse(coupon_round.is_open(datetime(2026, 11, 3, 20, 0, tzinfo=KST)))
 
-    def test_one_round_per_promotion_per_day(self):
-        make_round(self.promotion, datetime(2026, 11, 1, 12, 0, tzinfo=KST))
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            make_round(self.promotion, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
+    def test_current_round_is_latest_started(self):
+        first = make_round(
+            self.promotion,
+            datetime(2026, 11, 3, 20, 0, tzinfo=KST),
+            issue_starts_at=datetime(2026, 11, 1, 10, 0, tzinfo=KST),
+        )
+        second = make_round(
+            self.promotion,
+            datetime(2026, 11, 8, 20, 0, tzinfo=KST),
+            issue_starts_at=datetime(2026, 11, 5, 10, 0, tzinfo=KST),
+        )
 
-    def test_same_day_allowed_for_different_promotions(self):
-        other = make_promotion(with_round=False)
-        make_round(self.promotion, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
-        make_round(other, datetime(2026, 11, 1, 21, 0, tzinfo=KST))
-        self.assertEqual(CouponRound.objects.count(), 2)
+        def current(*args):
+            return CouponRound.objects.filter(promotion=self.promotion).current(datetime(*args, tzinfo=KST)).first()
+
+        self.assertIsNone(current(2026, 10, 31, 23, 0))  # 아직 시작한 발급분 없음
+        self.assertEqual(current(2026, 11, 2, 12, 0), first)
+        self.assertEqual(current(2026, 11, 4, 12, 0), first)  # 마감됐지만 다음 발급분 시작 전
+        self.assertEqual(current(2026, 11, 5, 10, 0), second)
 
     def test_quantity_must_be_positive(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -175,3 +197,16 @@ class BackfillCouponRoundMigrationTests(TransactionTestCase):
         apps = executor.loader.project_state(self.state_targets(executor, self.before)).apps
         self.assertFalse(apps.get_model('coupons', 'CouponRound').objects.exists())
         self.assertEqual(apps.get_model('coupons', 'Coupon').objects.filter(round__isnull=True).count(), 3)
+
+    def test_existing_round_opens_from_its_date_after_period_migration(self):
+        """0009·0010: 기존 발급분은 발급일 00:00(Asia/Seoul)부터 열린 것으로 채워지고 round_date는 없어진다."""
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        target = [('coupons', '0010_couponround_period')]
+        executor.migrate(target)
+        apps = executor.loader.project_state(self.state_targets(executor, target)).apps
+        coupon_round = apps.get_model('coupons', 'CouponRound').objects.get()
+
+        self.assertEqual(coupon_round.issue_starts_at, datetime(2026, 11, 18, 0, 0, tzinfo=KST))
+        self.assertEqual(coupon_round.expires_at, self.redeem_until)
+        self.assertFalse(hasattr(coupon_round, 'round_date'))

@@ -54,29 +54,39 @@ def end_of_day(moment):
     return timezone.localtime(moment).replace(hour=23, minute=59, second=59, microsecond=0)
 
 
-def make_round(promotion, *, day=None, expires_at=None, quantity=None):
-    """day(기준 시각, 기본 지금)의 발급분. 사용 마감 기본값은 그날 23:59:59와 redeem_until 중 이른 쪽."""
+def start_of_day(moment):
+    """moment가 속한 Asia/Seoul 날짜의 00:00:00"""
+    return timezone.localtime(moment).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def make_round(promotion, *, day=None, issue_starts_at=None, expires_at=None, quantity=None):
+    """하루치 발급분. 기본 기간은 day(기준 시각, 기본 지금)가 속한 날 00:00 ~ 23:59:59(redeem_until이 더 이르면 그때)."""
+    day = day or timezone.now()
     if expires_at is None:
-        expires_at = end_of_day(day or timezone.now())
+        expires_at = end_of_day(day)
         if promotion.redeem_until is not None:
             expires_at = min(expires_at, promotion.redeem_until)
+    if issue_starts_at is None:
+        issue_starts_at = min(start_of_day(day), start_of_day(expires_at))
     return CouponRound.objects.create(
         promotion=promotion,
+        issue_starts_at=issue_starts_at,
         expires_at=expires_at,
         quantity=quantity or promotion.total_quantity or 1000,
     )
 
 
 def make_coupon(**kwargs):
-    """Coupon.objects.create와 같은 인자를 받고, round가 없으면 오늘 발급분(없으면 새로 만듦)에 연결한다.
+    """Coupon.objects.create와 같은 인자를 받고, round가 없으면 지금 열린 발급분(없으면 오늘 발급분을 새로 만듦)에 연결한다.
 
     expires_at을 주지 않으면 발급분의 expires_at을 쓴다.
     """
     promotion = kwargs['promotion']
     coupon_round = kwargs.pop('round', None)
     if coupon_round is None:
+        now = timezone.now()
         coupon_round = (
-            CouponRound.objects.filter(promotion=promotion, round_date=timezone.localdate()).first()
+            CouponRound.objects.filter(promotion=promotion, issue_starts_at__lte=now, expires_at__gt=now).first()
             or make_round(promotion)
         )
     kwargs.setdefault('expires_at', coupon_round.expires_at)

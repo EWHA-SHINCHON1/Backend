@@ -18,12 +18,21 @@ class CouponQuerySet(models.QuerySet):
         raise ValueError(f'Unknown coupon status: {status!r}')
 
 
-class CouponRound(models.Model):
-    """관리자가 Admin에서 직접 여는 쿠폰 발급분(하루치 쿠폰 바구니). 자동으로 만들지 않습니다.
+class CouponRoundQuerySet(models.QuerySet):
+    def current(self, now):
+        """now 기준 현재 발급분: 발급이 시작된 발급분 중 가장 최근 것. (기간이 겹치지 않으므로 열린 발급분은 이것뿐)
 
-    - round_date는 expires_at의 Asia/Seoul 날짜로 저장 시 계산합니다. 관리자가 입력하지 않습니다.
-    - 한 프로모션에 같은 날짜의 발급분은 하나만 둡니다.
-    - 발급분은 round_date 당일에만 열리고, expires_at이 지나면 닫힙니다. 남은 수량은 이월하지 않습니다.
+        마감됐어도 다음 발급분이 시작되기 전까지는 현재 발급분입니다.
+        """
+        return self.filter(issue_starts_at__lte=now).order_by('-issue_starts_at', '-id')
+
+
+class CouponRound(models.Model):
+    """관리자가 Admin에서 직접 여는 쿠폰 발급분(쿠폰 바구니). 자동으로 만들지 않습니다.
+
+    - issue_starts_at <= now < expires_at 동안 열립니다. expires_at은 발급 종료이자 받은 쿠폰의 사용 마감입니다.
+    - 한 프로모션의 발급분 기간은 서로 겹치지 않습니다. (Admin에서 Promotion 행을 잠근 뒤 검증)
+    - 발급분이 닫히면 남은 수량은 이월하지 않습니다.
     - 쿠폰이 연결된 발급분은 삭제할 수 없습니다. (Coupon.round = PROTECT)
     """
 
@@ -34,33 +43,34 @@ class CouponRound(models.Model):
         verbose_name='프로모션',
     )
     quantity = models.PositiveIntegerField('발급 수량', validators=[MinValueValidator(1)])
+    issue_starts_at = models.DateTimeField('발급 시작')
     expires_at = models.DateTimeField('쿠폰 사용 마감')
-    round_date = models.DateField('발급일', editable=False)
     created_at = models.DateTimeField('생성 시각', auto_now_add=True)
+
+    objects = CouponRoundQuerySet.as_manager()
 
     class Meta:
         db_table = 'coupon_rounds'
         verbose_name = '쿠폰 발급분'
         verbose_name_plural = '쿠폰 발급분'
-        ordering = ['round_date', 'id']
+        ordering = ['issue_starts_at', 'id']
         constraints = [
-            models.UniqueConstraint(
-                fields=['promotion', 'round_date'],
-                name='uniq_coupon_round_promotion_date',
-            ),
             models.CheckConstraint(
                 condition=models.Q(quantity__gt=0),
                 name='coupon_round_quantity_positive',
             ),
+            models.CheckConstraint(
+                condition=models.Q(issue_starts_at__lt=models.F('expires_at')),
+                name='coupon_round_starts_before_expires',
+                violation_error_message='발급 시작은 쿠폰 사용 마감보다 빨라야 합니다.',
+            ),
         ]
 
     def __str__(self):
-        return f'{self.promotion_id} {self.round_date}'
+        return f'{self.promotion_id} {timezone.localtime(self.issue_starts_at):%Y-%m-%d %H:%M}'
 
-    def save(self, *args, **kwargs):
-        if self.expires_at is not None:
-            self.round_date = timezone.localdate(self.expires_at)
-        super().save(*args, **kwargs)
+    def is_open(self, now):
+        return self.issue_starts_at <= now < self.expires_at
 
 
 class Coupon(models.Model):
