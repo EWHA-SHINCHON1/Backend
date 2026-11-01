@@ -122,7 +122,7 @@ pip freeze --exclude pip | Out-File -Encoding ascii requirements.txt
 │   └── tests/
 ├── stores/              # Store, StoreMenu, StoreAccessToken
 ├── promotions/          # Promotion, PromotionEvent
-├── coupons/             # Coupon
+├── coupons/             # Coupon, CouponRound(발급분), PinAttempt
 ├── manage.py
 ├── requirements.txt
 ├── docker-compose.yml   # 로컬 개발용 PostgreSQL
@@ -424,11 +424,36 @@ Base URL: `/api/v1/`
 | `expired` | 미사용이고 현재 시각 ≥ `expires_at` |
 | `available` | 그 외 |
 
+### 발급분 (하루치 쿠폰)
+
+쿠폰형 프로모션의 쿠폰은 관리자가 Django Admin의 프로모션 화면 **쿠폰 발급분** 표에서 날짜마다 직접 여는 **발급분**에서 나옵니다. 자동으로 열리지 않습니다.
+
+- 발급분은 `수량`과 `사용 마감`(날짜·시각)을 가집니다. 발급일은 사용 마감의 한국 날짜이고, 한 프로모션에 **하루 하나**만 둘 수 있습니다.
+- 발급분은 **발급일 당일 00:00(Asia/Seoul)부터 사용 마감 전까지만** 열립니다. 미래 날짜 발급분은 미리 등록해 둘 수 있습니다.
+- 그 발급분에서 받은 쿠폰의 `expires_at`은 발급분의 사용 마감입니다.
+- 발급분이 마감되면 남은 수량은 사라지고 **다음 발급분으로 이월되지 않습니다.**
+- 같은 사용자는 **발급분마다 한 장**씩 받을 수 있습니다. 어제 받은 사용자도 오늘 발급분에서 다시 받을 수 있습니다.
+- 프로모션의 `total_quantity`는 모든 발급분을 합한 **전체 발급 상한**, `redeem_until`은 발급분 사용 마감의 **최종 한도**입니다.
+- 쿠폰이 발급된 발급분은 삭제, 사용 마감 변경, 발급 수보다 적게 수량 줄이기가 막힙니다. 수량 늘리기는 됩니다.
+- Admin 프로모션 목록과 발급분 표에서 뿌린 양, 가져간 양, 실제 사용, 미사용 만료, 사용 대기, 안 가져가고 소멸, 사용률(받은 대비·뿌린 대비)을 볼 수 있습니다.
+
+**프로모션 응답의 쿠폰 필드** (공개 목록·상세·저장 목록. 필드 이름과 형식은 그대로이고, 쿠폰형은 **오늘 발급분 기준** 값입니다)
+
+| 필드 | 값 |
+| --- | --- |
+| `status` | 기간 안에서 오늘 발급분이 열려 있고 수량이 남았으면 `active`, 오늘 발급분이 없거나 마감·소진됐으면 `sold_out`. 다음 날 발급분이 열리면 다시 `active`가 될 수 있습니다. `?status=` 필터도 같은 기준입니다. |
+| `remaining_quantity` | 오늘 발급분에서 지금 더 받을 수 있는 수량 (전체 상한 반영). 발급분이 없거나 마감됐으면 `0` |
+| `total_quantity` | 오늘 발급분 수량. 없으면 가장 최근 발급분 수량, 발급분이 없으면 `0` |
+| `redeem_until` | 오늘 발급분의 사용 마감. 없으면 프로모션의 최종 사용 한도 |
+| `my_coupon_id` (상세) | 오늘 발급분에서 받은 내 쿠폰. 이전 날짜 쿠폰만 있으면 `null` |
+
+쿠폰의 사용 기한(D-day) 표시는 프로모션의 `redeem_until`이 아니라 **쿠폰의 `expires_at`**을 한국 시간 기준으로 계산하세요. 내 쿠폰 목록에는 같은 프로모션의 쿠폰이 날짜별로 여러 장 있을 수 있습니다.
+
 ### `POST /api/v1/promotions/{promotion_id}/coupons/`
 
-- 본문: `{}`. 처음 받으면 `201` `{"created": true, "coupon": {...}}`, 이미 받았으면 `200` `{"created": false, "coupon": {기존 쿠폰}}`
-- `coupon`: `id`(UUID), `status`, `issued_at`, `expires_at`(발급 시 프로모션의 `redeem_until`을 복사)
-- 이미 받은 쿠폰은 사용·만료·프로모션 종료·비공개·품절·매장 비활성이어도 재발급하지 않고 기존 쿠폰을 돌려줍니다.
+- 본문: `{}`. 처음 받으면 `201` `{"created": true, "coupon": {...}}`, 오늘 이미 받았으면 `200` `{"created": false, "coupon": {기존 쿠폰}}`
+- `coupon`: `id`(UUID), `status`, `issued_at`, `expires_at`(발급 시 오늘 발급분의 사용 마감을 복사)
+- 오늘(Asia/Seoul) 발급분에서 이미 받은 쿠폰은 사용·만료·발급분 마감·프로모션 종료·비공개·품절·매장 비활성이어도 재발급하지 않고 그 쿠폰을 돌려줍니다. 이전 날짜에 받은 쿠폰은 보지 않습니다.
 
 | HTTP | code | 상황 |
 | --- | --- | --- |
@@ -436,7 +461,7 @@ Base URL: `/api/v1/`
 | 400 | `PROMOTION_COUPON_NOT_REQUIRED` | 쿠폰 없이 참여하는 프로모션 |
 | 409 | `PROMOTION_NOT_ACTIVE` | 발급 시작 전 |
 | 409 | `PROMOTION_ENDED` | 발급 기간 종료 |
-| 409 | `COUPON_SOLD_OUT` | 발급 수량 소진 (사용·만료된 쿠폰도 수량에 포함) |
+| 409 | `COUPON_SOLD_OUT` | 오늘 발급분이 없거나 마감됨, 또는 오늘 발급분 수량·프로모션 전체 상한 소진 (사용·만료된 쿠폰도 수량에 포함) |
 | 429 | `TOO_MANY_REQUESTS` | 요청 횟수 초과: 로그인 사용자별 분당 10회. `Retry-After` 헤더(초) 포함. 이미 받은 쿠폰 재요청도 횟수에 포함 |
 
 요청 횟수 기록은 DB 캐시(`django_cache` 테이블)에 저장합니다. 로컬에서 처음 한 번 `python manage.py createcachetable`을 실행하세요. (Railway는 pre-deploy에서 자동 실행)
