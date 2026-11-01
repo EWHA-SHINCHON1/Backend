@@ -121,18 +121,15 @@ class CouponRoundInlineFormSet(BaseInlineFormSet):
     - Admin change view는 PromotionAdminForm.clean()에서 Promotion 행을 잠근 뒤 이 검증을 실행하므로
       발급 수 확인과 저장 사이에 같은 프로모션의 쿠폰 발급이 끼어들지 않습니다.
     - self.instance에는 같은 요청에서 입력한 프로모션 값(기간·사용 기한)이 반영되어 있습니다.
-    - 한 프로모션의 발급분 기간(발급 시작 ~ 쿠폰 사용 마감)은 서로 겹칠 수 없습니다.
-    - 모든 발급분의 사용 마감은 프로모션의 쿠폰 사용 종료(최종 한도)를 넘을 수 없습니다.
-    - 쿠폰이 발급된 발급분은 기간 변경·발급 수 미만으로 수량 축소를 막습니다. (사용자와의 약속 보호)
+    - 쿠폰이 발급된 발급분은 마감 변경·발급 수 미만으로 수량 축소를 막습니다. (사용자와의 약속 보호)
       삭제는 Coupon.round = PROTECT를 보고 Django Admin이 막습니다.
-    - 발급 시작 < 사용 마감은 CouponRound의 CheckConstraint가 폼 검증에서 막습니다.
     """
 
     def clean(self):
         super().clean()
         promotion = self.instance
         now = timezone.now()
-        periods = []
+        round_dates = set()
 
         for form in self.forms:
             if not hasattr(form, 'cleaned_data'):
@@ -150,10 +147,9 @@ class CouponRoundInlineFormSet(BaseInlineFormSet):
                 form.add_error(None, '비쿠폰형 프로모션에는 쿠폰 발급분을 둘 수 없습니다.')
                 continue
 
-            starts_at = form.cleaned_data.get('issue_starts_at')
             expires_at = form.cleaned_data.get('expires_at')
             quantity = form.cleaned_data.get('quantity')
-            if starts_at is None or expires_at is None or starts_at >= expires_at:
+            if expires_at is None:
                 continue
 
             if quantity is not None and quantity < issued_count:
@@ -162,34 +158,33 @@ class CouponRoundInlineFormSet(BaseInlineFormSet):
                     f'이미 {issued_count}장이 발급되어 그보다 적게 줄일 수 없습니다.',
                 )
 
-            if promotion.redeem_until is not None and expires_at > promotion.redeem_until:
-                form.add_error('expires_at', '프로모션의 쿠폰 사용 종료 시각보다 늦을 수 없습니다.')
-
-            changed = [name for name in ('issue_starts_at', 'expires_at') if name in form.changed_data]
-            if changed:
+            if 'expires_at' in form.changed_data:
                 if issued_count:
-                    for name in changed:
-                        form.add_error(name, '쿠폰이 발급된 발급분의 기간은 변경할 수 없습니다.')
+                    form.add_error('expires_at', '쿠폰이 발급된 발급분의 사용 마감은 변경할 수 없습니다.')
                 elif expires_at <= now:
                     form.add_error('expires_at', '이미 지난 시각으로는 발급분을 만들 수 없습니다.')
-                elif promotion.starts_at is not None and promotion.ends_at is not None and not (
-                    starts_at < promotion.ends_at and expires_at > promotion.starts_at
-                ):
-                    form.add_error('issue_starts_at', '프로모션 기간과 겹치지 않아 발급이 열리지 않습니다.')
+                else:
+                    self._validate_within_promotion(form, promotion, expires_at)
 
-            periods.append((starts_at, expires_at, form))
+            round_date = timezone.localdate(expires_at)
+            if round_date in round_dates:
+                form.add_error('expires_at', f'{round_date} 발급분이 이미 있습니다. 발급분은 하루에 하나만 둘 수 있습니다.')
+            round_dates.add(round_date)
 
-        periods.sort(key=lambda period: period[0])
-        for (_, previous_expires_at, previous_form), (starts_at, _, form) in zip(periods, periods[1:]):
-            if starts_at < previous_expires_at:
-                previous = previous_form.cleaned_data
-                form.add_error(
-                    'issue_starts_at',
-                    '다른 발급분({} ~ {})과 기간이 겹칩니다.'.format(
-                        timezone.localtime(previous['issue_starts_at']).strftime('%m/%d %H:%M'),
-                        timezone.localtime(previous['expires_at']).strftime('%m/%d %H:%M'),
-                    ),
-                )
+    @staticmethod
+    def _validate_within_promotion(form, promotion, expires_at):
+        if promotion.redeem_until is not None and expires_at > promotion.redeem_until:
+            form.add_error('expires_at', '프로모션의 쿠폰 사용 종료 시각보다 늦을 수 없습니다.')
+        if promotion.starts_at is None or promotion.ends_at is None:
+            return
+        round_date = timezone.localdate(expires_at)
+        first_day = timezone.localdate(promotion.starts_at)
+        last_day = timezone.localdate(promotion.ends_at)
+        if not first_day <= round_date <= last_day:
+            form.add_error(
+                'expires_at',
+                f'발급일({round_date})이 프로모션 기간({first_day} ~ {last_day}) 밖이라 발급이 열리지 않습니다.',
+            )
 
 
 def _rate(numerator, denominator):
@@ -240,8 +235,8 @@ class CouponRoundInline(admin.TabularInline):
     model = CouponRound
     formset = CouponRoundInlineFormSet
     fields = (
-        'issue_starts_at',
         'expires_at',
+        'round_date',
         'quantity',
         'issued_count',
         'used_count',
@@ -251,10 +246,10 @@ class CouponRoundInline(admin.TabularInline):
         'usage_rate_of_issued',
         'usage_rate_of_quantity',
     )
-    readonly_fields = fields[3:]
+    readonly_fields = fields[1:2] + fields[3:]
     extra = 0
     verbose_name = '쿠폰 발급분'
-    verbose_name_plural = '쿠폰 발급분 (발급 시작부터 쿠폰 사용 마감까지 발급, 기간은 서로 겹칠 수 없음)'
+    verbose_name_plural = '쿠폰 발급분 (하루에 하나, 사용 마감 날짜 00:00부터 마감 시각까지 발급)'
 
     def get_queryset(self, request):
         self.stats_now = timezone.now()
