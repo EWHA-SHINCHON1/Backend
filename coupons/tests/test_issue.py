@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -388,6 +388,111 @@ class CouponRoundIssueTests(TestCase):
         self.assertEqual(Coupon.objects.filter(user=self.user, promotion=self.promotion).count(), 2)
 
 
+class CouponReissueTests(TestCase):
+    """1인 1회 발급(one_coupon_per_user) 해제: 같은 발급분에서도 쿠폰을 사용한 뒤 다시 받을 수 있다."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='u1')
+        self.client = logged_in_client(self.user)
+        self.promotion = make_promotion(total_quantity=10, one_coupon_per_user=False)
+        self.round = self.promotion.coupon_rounds.get()
+
+    def post(self):
+        return self.client.post(issue_url(self.promotion.pk), {}, format='json')
+
+    def use(self, coupon_id):
+        Coupon.objects.filter(pk=coupon_id).update(used_at=timezone.now())
+
+    def test_one_coupon_per_user_is_default(self):
+        self.assertIs(make_promotion().one_coupon_per_user, True)
+
+    def test_unused_coupon_is_returned_not_reissued(self):
+        first = self.post().json()['coupon']
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()['created'], False)
+        self.assertEqual(response.json()['coupon']['id'], first['id'])
+        self.assertEqual(Coupon.objects.filter(user=self.user).count(), 1)
+
+    def test_used_coupon_allows_new_coupon_in_same_round(self):
+        first = self.post().json()['coupon']
+        self.use(first['id'])
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertIs(body['created'], True)
+        self.assertNotEqual(body['coupon']['id'], first['id'])
+        self.assertEqual(body['coupon']['status'], 'available')
+        self.assertEqual(Coupon.objects.filter(user=self.user, round=self.round).count(), 2)
+
+    def test_reissue_is_unlimited(self):
+        for _ in range(5):
+            response = self.post()
+            self.assertEqual(response.status_code, 201)
+            self.use(response.json()['coupon']['id'])
+
+        self.assertEqual(Coupon.objects.filter(user=self.user, round=self.round).count(), 5)
+
+    def test_reissued_coupons_count_toward_round_quantity(self):
+        self.round.quantity = 2
+        self.round.save(update_fields=['quantity'])
+        self.use(self.post().json()['coupon']['id'])
+        self.use(self.post().json()['coupon']['id'])
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['error']['code'], 'COUPON_SOLD_OUT')
+
+    def test_reissued_coupons_count_toward_total_quantity(self):
+        Promotion.objects.filter(pk=self.promotion.pk).update(total_quantity=2)
+        self.use(self.post().json()['coupon']['id'])
+        self.use(self.post().json()['coupon']['id'])
+
+        self.assertEqual(self.post().json()['error']['code'], 'COUPON_SOLD_OUT')
+
+    def test_switching_to_unlimited_after_issue_applies_to_next_request(self):
+        Promotion.objects.filter(pk=self.promotion.pk).update(one_coupon_per_user=True)
+        first = self.post().json()['coupon']
+        self.use(first['id'])
+        self.assertEqual(self.post().status_code, 200)  # 1인 1회: 사용한 쿠폰을 그대로 돌려줌
+
+        Promotion.objects.filter(pk=self.promotion.pk).update(one_coupon_per_user=False)
+        self.assertEqual(self.post().status_code, 201)
+
+    def test_switching_to_one_per_user_returns_unused_coupon_first(self):
+        used = make_coupon(user=self.user, promotion=self.promotion, used_at=timezone.now())
+        unused = make_coupon(user=self.user, promotion=self.promotion)
+        Promotion.objects.filter(pk=self.promotion.pk).update(one_coupon_per_user=True)
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['coupon']['id'], str(unused.pk))
+        self.assertNotEqual(response.json()['coupon']['id'], str(used.pk))
+
+    def test_switching_to_one_per_user_returns_latest_used_coupon(self):
+        now = timezone.now()
+        make_coupon(user=self.user, promotion=self.promotion, used_at=now - timedelta(minutes=10))
+        latest = make_coupon(user=self.user, promotion=self.promotion, used_at=now - timedelta(minutes=1))
+        Promotion.objects.filter(pk=self.promotion.pk).update(one_coupon_per_user=True)
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['coupon']['id'], str(latest.pk))
+
+    def test_db_allows_only_one_unused_coupon_per_round(self):
+        make_coupon(user=self.user, promotion=self.promotion, used_at=timezone.now())
+        make_coupon(user=self.user, promotion=self.promotion)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            make_coupon(user=self.user, promotion=self.promotion)
+
+
 class CouponIssueConcurrencyTests(TransactionTestCase):
     """PostgreSQL에서 스레드마다 별도 DB 연결·트랜잭션으로 동시에 발급을 요청한다."""
 
@@ -439,6 +544,18 @@ class CouponIssueConcurrencyTests(TransactionTestCase):
 
         self.assertEqual(sorted(status for status, _ in results), [201] + [409] * 4)
         self.assertEqual(Coupon.objects.filter(promotion=promotion).count(), 1)
+
+    def test_reissue_concurrent_requests_create_one_new_coupon(self):
+        """1인 1회 해제: 사용 후 동시에 다시 받아도 새 쿠폰은 한 장만 생긴다."""
+        user = User.objects.create_user(username='u1')
+        promotion = make_promotion(total_quantity=10, one_coupon_per_user=False)
+        make_coupon(user=user, promotion=promotion, used_at=timezone.now())
+
+        results = self.concurrent_posts([logged_in_client(user) for _ in range(8)], promotion.pk)
+
+        self.assertEqual(sorted(status for status, _ in results), [200] * 7 + [201])
+        self.assertEqual(len({body['coupon']['id'] for _, body in results}), 1)
+        self.assertEqual(Coupon.objects.filter(user=user, promotion=promotion, used_at__isnull=True).count(), 1)
 
 
 class CouponIssueAdminRaceTests(TransactionTestCase):
