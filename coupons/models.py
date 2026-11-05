@@ -17,6 +17,16 @@ class CouponQuerySet(models.QuerySet):
             return self.filter(used_at__isnull=True, expires_at__gt=now)
         raise ValueError(f'Unknown coupon status: {status!r}')
 
+    def returnable_on_issue(self):
+        """발급 요청 때 새로 발급하지 않고 돌려줄 쿠폰. (발급 API, 프로모션 상세 my_coupon_id 공통)
+
+        1인 1회 프로모션은 사용 여부와 관계없이 모든 쿠폰, 아니면 미사용 쿠폰만 남깁니다.
+        미사용 쿠폰을 먼저, 그다음 최근에 사용한 쿠폰 순으로 정렬합니다.
+        """
+        return self.filter(
+            models.Q(used_at__isnull=True) | models.Q(promotion__one_coupon_per_user=True)
+        ).order_by(models.F('used_at').desc(nulls_first=True), '-issued_at')
+
 
 class CouponRoundQuerySet(models.QuerySet):
     def current(self, now):
@@ -77,7 +87,8 @@ class Coupon(models.Model):
     """사용자에게 발급된 프로모션 쿠폰.
 
     - status는 저장하지 않고 get_status()로 계산합니다.
-    - 쿠폰은 발급분(CouponRound)에서 나옵니다. 같은 사용자는 발급분마다 한 장만 받을 수 있습니다.
+    - 쿠폰은 발급분(CouponRound)에서 나옵니다. 같은 사용자는 발급분마다 미사용 쿠폰을 한 장까지만 가질 수 있습니다.
+      (Promotion.one_coupon_per_user면 사용 후에도 같은 발급분에서 다시 받지 못하며, 이는 발급 로직에서 막습니다.)
     - expires_at은 발급 당시 발급분의 expires_at을 복사해 명시적으로 저장합니다.
       이후 발급분·프로모션의 값이 바뀌어도 기존 쿠폰은 바뀌지 않습니다.
     - 사용 PIN은 매장(Store) 공통 PIN으로 검증하므로 쿠폰에는 PIN 컬럼이 없습니다.
@@ -94,7 +105,7 @@ class Coupon(models.Model):
         on_delete=models.PROTECT,
         related_name='coupons',
         verbose_name='사용자',
-        # UNIQUE(user, round) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
+        # (user, round) 인덱스가 user 단독 조회도 처리하므로 FK 기본 인덱스는 생략
         db_index=False,
     )
     promotion = models.ForeignKey(
@@ -119,8 +130,16 @@ class Coupon(models.Model):
         db_table = 'coupons'
         verbose_name = '쿠폰'
         verbose_name_plural = '쿠폰'
+        # 부분 유니크 인덱스는 미사용 쿠폰만 담으므로 user·(user, round) 조회용 일반 인덱스를 따로 둡니다.
+        indexes = [
+            models.Index(fields=['user', 'round'], name='coupon_user_round_idx'),
+        ]
         constraints = [
-            models.UniqueConstraint(fields=['user', 'round'], name='uniq_coupon_user_round'),
+            models.UniqueConstraint(
+                fields=['user', 'round'],
+                condition=models.Q(used_at__isnull=True),
+                name='uniq_coupon_user_round_unused',
+            ),
         ]
 
     def __str__(self):

@@ -119,6 +119,13 @@ class Promotion(models.Model):
     requires_coupon = models.BooleanField('쿠폰 필요 여부', default=True)
     redeem_until = models.DateTimeField('쿠폰 사용 종료', null=True, blank=True)
     total_quantity = models.PositiveIntegerField('총 쿠폰 발급 수량', null=True, blank=True)
+    # 체크: 발급분마다 1인 1장(사용해도 같은 발급분에서는 재발급 없음, 선착순 행사용).
+    # 해제: 같은 발급분에서도 미사용 쿠폰이 없으면 다시 발급합니다. 쿠폰 발급 후에도 바꿀 수 있습니다.
+    one_coupon_per_user = models.BooleanField(
+        '1인 1회 발급',
+        default=True,
+        help_text='체크하면 발급분마다 한 사람당 한 장만 받습니다. 해제하면 쿠폰을 사용한 뒤 같은 발급분에서 다시 받을 수 있습니다.',
+    )
     # 운영자 검수 전 노출을 막기 위해 기본값은 비공개입니다.
     is_published = models.BooleanField('공개 여부', default=False)
     featured_rank = models.PositiveIntegerField('추천 노출 순위', null=True, blank=True)

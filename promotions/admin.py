@@ -348,7 +348,7 @@ class PromotionAdmin(admin.ModelAdmin):
         'usage_rate_of_distributed',
     )
     search_fields = ('title', 'store__name')
-    list_filter = ('store', 'requires_coupon', 'is_published')
+    list_filter = ('store', 'requires_coupon', 'one_coupon_per_user', 'is_published')
     list_select_related = ('store',)
     autocomplete_fields = ('store',)
     readonly_fields = ('created_at', 'updated_at')
@@ -380,8 +380,11 @@ class PromotionAdmin(admin.ModelAdmin):
         (
             '쿠폰 정보',
             {
-                'fields': ('redeem_until', 'total_quantity'),
-                'description': '비쿠폰형으로 저장하면 두 값은 자동으로 비워집니다.',
+                'fields': ('redeem_until', 'total_quantity', 'one_coupon_per_user'),
+                'description': (
+                    '비쿠폰형으로 저장하면 쿠폰 사용 종료·총 발급 수량은 자동으로 비워집니다. '
+                    '1인 1회 발급은 쿠폰이 발급된 뒤에도 바꿀 수 있으며, 이후 요청부터 적용됩니다.'
+                ),
             },
         ),
         (

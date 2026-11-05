@@ -28,6 +28,9 @@ def issue_coupon(*, user, promotion_id):
     - 현재 발급분은 발급이 시작된 발급분 중 가장 최근 것입니다. (CouponRound.objects.current)
     - 현재 발급분에서 이미 받은 쿠폰이 있으면 공개·매장 운영 여부·기간·수량·마감과 관계없이 그 쿠폰을 돌려줍니다.
       이전 발급분의 쿠폰은 보지 않으므로 같은 사용자도 발급분마다 새로 받을 수 있습니다.
+      - one_coupon_per_user(1인 1회)면 사용 여부와 관계없이 돌려줍니다.
+      - 해제돼 있으면 미사용 쿠폰만 돌려주고, 사용한 쿠폰만 있으면 새로 발급합니다. (재발급도 수량에서 차감)
+      - 설정을 바꿔 한 발급분에 여러 장이 있으면 미사용 쿠폰, 없으면 가장 최근 쿠폰을 돌려줍니다.
     - 비공개 프로모션과 비활성 매장(Store.is_active=False)의 프로모션은 공개 API에서 숨기므로
       신규 발급도 PROMOTION_NOT_FOUND(404)로 막습니다.
     - 현재 발급분이 없거나 마감됐거나, 발급분 수량 또는 프로모션 전체 상한(total_quantity)에 도달하면
@@ -42,7 +45,7 @@ def issue_coupon(*, user, promotion_id):
     now = timezone.now()
     current_round = CouponRound.objects.filter(promotion=promotion).current(now).first()
     if current_round is not None:
-        coupon = Coupon.objects.filter(user=user, round=current_round).first()
+        coupon = Coupon.objects.filter(user=user, round=current_round).returnable_on_issue().first()
         if coupon is not None:
             return coupon, False
 

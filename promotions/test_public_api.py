@@ -425,6 +425,29 @@ class PromotionPublicDetailAPITests(PromotionPublicAPITestBase):
             self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(today_coupon.id),
         )
 
+    def test_my_coupon_id_without_one_coupon_per_user(self):
+        """1인 1회 해제: 사용한 쿠폰은 my_coupon_id가 아니므로 null이 되어 다시 받을 수 있다."""
+        promotion = self.make_promotion(one_coupon_per_user=False)
+        user = User.objects.create_user(username='repeat')
+        self.client.force_login(user)
+
+        coupon = self.issue(promotion, user)
+        self.assertEqual(self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(coupon.id))
+
+        coupon.used_at = self.now
+        coupon.save(update_fields=['used_at'])
+        self.assertIsNone(self.client.get(self.url(promotion.id)).json()['my_coupon_id'])
+
+        new_coupon = self.issue(promotion, user)
+        self.assertEqual(self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(new_coupon.id))
+
+        # 다시 1인 1회로 바꾸면 미사용 쿠폰, 없으면 가장 최근에 사용한 쿠폰
+        Promotion.objects.filter(pk=promotion.pk).update(one_coupon_per_user=True)
+        self.assertEqual(self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(new_coupon.id))
+        new_coupon.used_at = self.now + timedelta(seconds=1)
+        new_coupon.save(update_fields=['used_at'])
+        self.assertEqual(self.client.get(self.url(promotion.id)).json()['my_coupon_id'], str(new_coupon.id))
+
     def test_coupon_fields_follow_current_round(self):
         """API 필드는 그대로, 값만 현재 발급분 기준."""
         promotion = self.make_promotion(with_round=False, total_quantity=100)

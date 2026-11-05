@@ -165,11 +165,12 @@ class PromotionPublicDetailView(PromotionPublicQueryMixin, RetrieveAPIView):
         queryset = self.public_queryset().prefetch_related('store__menus')
         if self.request.user.is_authenticated:
             # 현재 발급분에서 받은 쿠폰만 내 쿠폰으로 봅니다. 이전 발급분 쿠폰만 있으면 null이라 다시 받을 수 있습니다.
+            # 1인 1회가 아니면 사용한 쿠폰도 null이라 다시 받을 수 있습니다. (발급 API와 같은 기준)
             # current_round_id는 public_queryset()의 with_coupon_state()가 붙입니다.
             coupon_id = Coupon.objects.filter(
                 user=self.request.user,
                 round_id=OuterRef('current_round_id'),
-            ).values('id')[:1]
+            ).returnable_on_issue().values('id')[:1]
             return queryset.annotate(
                 api_my_coupon_id=Subquery(coupon_id, output_field=models.UUIDField())
             )
